@@ -1,0 +1,717 @@
+{
+  "valuation_date": "2024-01-02",
+  "spot": 100.0,
+  "vol": 0.3,
+  "rate": 0.04,
+  "binomial_steps": 200,
+  "grid": {
+    "dte": [
+      21,
+      35,
+      55,
+      75,
+      90
+    ],
+    "target_deltas": [
+      0.2,
+      0.25,
+      0.3
+    ],
+    "div_yields": [
+      0.0,
+      0.01,
+      0.02,
+      0.03,
+      0.04
+    ]
+  },
+  "results": [
+    {
+      "dte": 21,
+      "target_delta": 0.2,
+      "div_yield": 0.0,
+      "strike": 94.5,
+      "bs_price": 0.8130882091640512,
+      "binomial_american_price": 0.8095845901556676,
+      "diff_pct_of_premium": -0.004309026952912908
+    },
+    {
+      "dte": 21,
+      "target_delta": 0.2,
+      "div_yield": 0.01,
+      "strike": 94.5,
+      "bs_price": 0.8244555491003598,
+      "binomial_american_price": 0.8200145395917269,
+      "diff_pct_of_premium": -0.005386596661856311
+    },
+    {
+      "dte": 21,
+      "target_delta": 0.2,
+      "div_yield": 0.02,
+      "strike": 94.5,
+      "bs_price": 0.8359445381785577,
+      "binomial_american_price": 0.8306085566093517,
+      "diff_pct_of_premium": -0.006383176545219845
+    },
+    {
+      "dte": 21,
+      "target_delta": 0.2,
+      "div_yield": 0.03,
+      "strike": 94.5,
+      "bs_price": 0.8475558981999504,
+      "binomial_american_price": 0.8413811930474285,
+      "diff_pct_of_premium": -0.007285307276647765
+    },
+    {
+      "dte": 21,
+      "target_delta": 0.2,
+      "div_yield": 0.04,
+      "strike": 94.5,
+      "bs_price": 0.8592903471452996,
+      "binomial_american_price": 0.8523672229796548,
+      "diff_pct_of_premium": -0.008056792664603423
+    },
+    {
+      "dte": 21,
+      "target_delta": 0.25,
+      "div_yield": 0.0,
+      "strike": 95.5,
+      "bs_price": 1.0519332963991805,
+      "binomial_american_price": 1.0483659582738827,
+      "diff_pct_of_premium": -0.003391220847851316
+    },
+    {
+      "dte": 21,
+      "target_delta": 0.25,
+      "div_yield": 0.01,
+      "strike": 95.5,
+      "bs_price": 1.0657818576750926,
+      "binomial_american_price": 1.0609455033403883,
+      "diff_pct_of_premium": -0.004537846370601935
+    },
+    {
+      "dte": 21,
+      "target_delta": 0.25,
+      "div_yield": 0.02,
+      "strike": 95.5,
+      "bs_price": 1.0797659865981313,
+      "binomial_american_price": 1.0737219661975597,
+      "diff_pct_of_premium": -0.005597528052919754
+    },
+    {
+      "dte": 21,
+      "target_delta": 0.25,
+      "div_yield": 0.03,
+      "strike": 95.5,
+      "bs_price": 1.0938863229360705,
+      "binomial_american_price": 1.0867159363764063,
+      "diff_pct_of_premium": -0.006554964998939138
+    },
+    {
+      "dte": 21,
+      "target_delta": 0.25,
+      "div_yield": 0.04,
+      "strike": 95.5,
+      "bs_price": 1.1081435004106899,
+      "binomial_american_price": 1.099975127171761,
+      "diff_pct_of_premium": -0.00737122334418019
+    },
+    {
+      "dte": 21,
+      "target_delta": 0.3,
+      "div_yield": 0.0,
+      "strike": 97.0,
+      "bs_price": 1.4999278426289633,
+      "binomial_american_price": 1.5035733469457784,
+      "diff_pct_of_premium": 0.0024304531279488242
+    },
+    {
+      "dte": 21,
+      "target_delta": 0.3,
+      "div_yield": 0.01,
+      "strike": 96.5,
+      "bs_price": 1.3546043710546296,
+      "binomial_american_price": 1.34986666347433,
+      "diff_pct_of_premium": -0.003497484344163991
+    },
+    {
+      "dte": 21,
+      "target_delta": 0.3,
+      "div_yield": 0.02,
+      "strike": 96.5,
+      "bs_price": 1.3713204559326282,
+      "binomial_american_price": 1.3649562760185407,
+      "diff_pct_of_premium": -0.004640913716815517
+    },
+    {
+      "dte": 21,
+      "target_delta": 0.3,
+      "div_yield": 0.03,
+      "strike": 96.5,
+      "bs_price": 1.3881847097093905,
+      "binomial_american_price": 1.3803058285365177,
+      "diff_pct_of_premium": -0.005675672061336942
+    },
+    {
+      "dte": 21,
+      "target_delta": 0.3,
+      "div_yield": 0.04,
+      "strike": 96.5,
+      "bs_price": 1.4051976426139103,
+      "binomial_american_price": 1.3959749039299414,
+      "diff_pct_of_premium": -0.006563303555514837
+    },
+    {
+      "dte": 35,
+      "target_delta": 0.2,
+      "div_yield": 0.0,
+      "strike": 93.0,
+      "bs_price": 1.0322704876473738,
+      "binomial_american_price": 1.0404253747942718,
+      "diff_pct_of_premium": 0.00789995184836057
+    },
+    {
+      "dte": 35,
+      "target_delta": 0.2,
+      "div_yield": 0.01,
+      "strike": 93.0,
+      "bs_price": 1.0508509908520414,
+      "binomial_american_price": 1.0575805645396146,
+      "diff_pct_of_premium": 0.0064039276226183104
+    },
+    {
+      "dte": 35,
+      "target_delta": 0.2,
+      "div_yield": 0.02,
+      "strike": 93.0,
+      "bs_price": 1.0696864243927688,
+      "binomial_american_price": 1.0750633325481733,
+      "diff_pct_of_premium": 0.005026620916926006
+    },
+    {
+      "dte": 35,
+      "target_delta": 0.2,
+      "div_yield": 0.03,
+      "strike": 93.0,
+      "bs_price": 1.0887786934048314,
+      "binomial_american_price": 1.0928919682529916,
+      "diff_pct_of_premium": 0.003777879630705503
+    },
+    {
+      "dte": 35,
+      "target_delta": 0.2,
+      "div_yield": 0.04,
+      "strike": 93.0,
+      "bs_price": 1.1081296886209557,
+      "binomial_american_price": 1.1111207060850792,
+      "diff_pct_of_premium": 0.002699158315887832
+    },
+    {
+      "dte": 35,
+      "target_delta": 0.25,
+      "div_yield": 0.0,
+      "strike": 94.5,
+      "bs_price": 1.3990619504363497,
+      "binomial_american_price": 1.4091129467070134,
+      "diff_pct_of_premium": 0.007184096649564988
+    },
+    {
+      "dte": 35,
+      "target_delta": 0.25,
+      "div_yield": 0.01,
+      "strike": 94.5,
+      "bs_price": 1.4225073036746398,
+      "binomial_american_price": 1.4304969651568187,
+      "diff_pct_of_premium": 0.005616604893022225
+    },
+    {
+      "dte": 35,
+      "target_delta": 0.25,
+      "div_yield": 0.02,
+      "strike": 94.5,
+      "bs_price": 1.446241735864059,
+      "binomial_american_price": 1.4522751131176919,
+      "diff_pct_of_premium": 0.004171762647983814
+    },
+    {
+      "dte": 35,
+      "target_delta": 0.25,
+      "div_yield": 0.03,
+      "strike": 94.5,
+      "bs_price": 1.470266867546896,
+      "binomial_american_price": 1.4744931014641471,
+      "diff_pct_of_premium": 0.002874467221248449
+    },
+    {
+      "dte": 35,
+      "target_delta": 0.25,
+      "div_yield": 0.04,
+      "strike": 94.5,
+      "bs_price": 1.494584295673045,
+      "binomial_american_price": 1.4972247480244876,
+      "diff_pct_of_premium": 0.001766680112380979
+    },
+    {
+      "dte": 35,
+      "target_delta": 0.3,
+      "div_yield": 0.0,
+      "strike": 96.0,
+      "bs_price": 1.8505749470783432,
+      "binomial_american_price": 1.8607668548648721,
+      "diff_pct_of_premium": 0.0055074277335374665
+    },
+    {
+      "dte": 35,
+      "target_delta": 0.3,
+      "div_yield": 0.01,
+      "strike": 96.0,
+      "bs_price": 1.879408308243766,
+      "binomial_american_price": 1.8866264123844378,
+      "diff_pct_of_premium": 0.0038406258549622185
+    },
+    {
+      "dte": 35,
+      "target_delta": 0.3,
+      "div_yield": 0.02,
+      "strike": 96.0,
+      "bs_price": 1.908559033782095,
+      "binomial_american_price": 1.9129595839825007,
+      "diff_pct_of_premium": 0.002305692474015484
+    },
+    {
+      "dte": 35,
+      "target_delta": 0.3,
+      "div_yield": 0.03,
+      "strike": 96.0,
+      "bs_price": 1.9380283140407473,
+      "binomial_american_price": 1.9398418293377588,
+      "diff_pct_of_premium": 0.0009357527358464797
+    },
+    {
+      "dte": 35,
+      "target_delta": 0.3,
+      "div_yield": 0.04,
+      "strike": 95.5,
+      "bs_price": 1.8000237480427308,
+      "binomial_american_price": 1.8044248420928577,
+      "diff_pct_of_premium": 0.0024450199920486933
+    },
+    {
+      "dte": 55,
+      "target_delta": 0.2,
+      "div_yield": 0.0,
+      "strike": 92.0,
+      "bs_price": 1.4150238636077015,
+      "binomial_american_price": 1.4227576990283193,
+      "diff_pct_of_premium": 0.00546551589660109
+    },
+    {
+      "dte": 55,
+      "target_delta": 0.2,
+      "div_yield": 0.01,
+      "strike": 91.5,
+      "bs_price": 1.3288911765657463,
+      "binomial_american_price": 1.338804221582665,
+      "diff_pct_of_premium": 0.007459636418489121
+    },
+    {
+      "dte": 55,
+      "target_delta": 0.2,
+      "div_yield": 0.02,
+      "strike": 91.5,
+      "bs_price": 1.3584680926854105,
+      "binomial_american_price": 1.3661326085390215,
+      "diff_pct_of_premium": 0.005642028616557266
+    },
+    {
+      "dte": 55,
+      "target_delta": 0.2,
+      "div_yield": 0.03,
+      "strike": 91.5,
+      "bs_price": 1.3885418606808118,
+      "binomial_american_price": 1.3941102437849149,
+      "diff_pct_of_premium": 0.004010237834221943
+    },
+    {
+      "dte": 55,
+      "target_delta": 0.2,
+      "div_yield": 0.04,
+      "strike": 91.5,
+      "bs_price": 1.4191168277362614,
+      "binomial_american_price": 1.4228221983624856,
+      "diff_pct_of_premium": 0.002611039876212966
+    },
+    {
+      "dte": 55,
+      "target_delta": 0.25,
+      "div_yield": 0.0,
+      "strike": 93.5,
+      "bs_price": 1.8045943933026671,
+      "binomial_american_price": 1.816483250438144,
+      "diff_pct_of_premium": 0.006588104883623528
+    },
+    {
+      "dte": 55,
+      "target_delta": 0.25,
+      "div_yield": 0.01,
+      "strike": 93.5,
+      "bs_price": 1.8419437515855765,
+      "binomial_american_price": 1.8501747412026541,
+      "diff_pct_of_premium": 0.004468643306828562
+    },
+    {
+      "dte": 55,
+      "target_delta": 0.25,
+      "div_yield": 0.02,
+      "strike": 93.5,
+      "bs_price": 1.8798551928504688,
+      "binomial_american_price": 1.8846445570186527,
+      "diff_pct_of_premium": 0.002547730371147237
+    },
+    {
+      "dte": 55,
+      "target_delta": 0.25,
+      "div_yield": 0.03,
+      "strike": 93.5,
+      "bs_price": 1.9183322967361491,
+      "binomial_american_price": 1.9199190920342877,
+      "diff_pct_of_premium": 0.000827174364336313
+    },
+    {
+      "dte": 55,
+      "target_delta": 0.25,
+      "div_yield": 0.04,
+      "strike": 93.0,
+      "bs_price": 1.8112814577377656,
+      "binomial_american_price": 1.816033667000345,
+      "diff_pct_of_premium": 0.0026236724515000093
+    },
+    {
+      "dte": 55,
+      "target_delta": 0.3,
+      "div_yield": 0.0,
+      "strike": 95.5,
+      "bs_price": 2.4328743509399637,
+      "binomial_american_price": 2.4552124718421795,
+      "diff_pct_of_premium": 0.00918178158012362
+    },
+    {
+      "dte": 55,
+      "target_delta": 0.3,
+      "div_yield": 0.01,
+      "strike": 95.0,
+      "bs_price": 2.307853639470107,
+      "binomial_american_price": 2.320601096893471,
+      "diff_pct_of_premium": 0.005523512065648587
+    },
+    {
+      "dte": 55,
+      "target_delta": 0.3,
+      "div_yield": 0.02,
+      "strike": 95.0,
+      "bs_price": 2.352611037484398,
+      "binomial_american_price": 2.3608234059662205,
+      "diff_pct_of_premium": 0.0034907463881509487
+    },
+    {
+      "dte": 55,
+      "target_delta": 0.3,
+      "div_yield": 0.03,
+      "strike": 95.0,
+      "bs_price": 2.3979763501834137,
+      "binomial_american_price": 2.4020085284406596,
+      "diff_pct_of_premium": 0.0016814920868329164
+    },
+    {
+      "dte": 55,
+      "target_delta": 0.3,
+      "div_yield": 0.04,
+      "strike": 95.0,
+      "bs_price": 2.4439521807928735,
+      "binomial_american_price": 2.4443232401512622,
+      "diff_pct_of_premium": 0.00015182758537787345
+    },
+    {
+      "dte": 75,
+      "target_delta": 0.2,
+      "div_yield": 0.0,
+      "strike": 91.0,
+      "bs_price": 1.6807974437113928,
+      "binomial_american_price": 1.694774867217188,
+      "diff_pct_of_premium": 0.008315947622416345
+    },
+    {
+      "dte": 75,
+      "target_delta": 0.2,
+      "div_yield": 0.01,
+      "strike": 90.5,
+      "bs_price": 1.602050859425352,
+      "binomial_american_price": 1.6128562417266432,
+      "diff_pct_of_premium": 0.00674471864467966
+    },
+    {
+      "dte": 75,
+      "target_delta": 0.2,
+      "div_yield": 0.02,
+      "strike": 90.5,
+      "bs_price": 1.6431251681118773,
+      "binomial_american_price": 1.650585354926318,
+      "diff_pct_of_premium": 0.004540242556818336
+    },
+    {
+      "dte": 75,
+      "target_delta": 0.2,
+      "div_yield": 0.03,
+      "strike": 90.5,
+      "bs_price": 1.6849867381446886,
+      "binomial_american_price": 1.6893248321958583,
+      "diff_pct_of_premium": 0.0025745567920292946
+    },
+    {
+      "dte": 75,
+      "target_delta": 0.2,
+      "div_yield": 0.04,
+      "strike": 90.0,
+      "bs_price": 1.6055259797763364,
+      "binomial_american_price": 1.6105675497240637,
+      "diff_pct_of_premium": 0.0031401360122678573
+    },
+    {
+      "dte": 75,
+      "target_delta": 0.25,
+      "div_yield": 0.0,
+      "strike": 93.0,
+      "bs_price": 2.2214527929451964,
+      "binomial_american_price": 2.245568501592725,
+      "diff_pct_of_premium": 0.010855827647616235
+    },
+    {
+      "dte": 75,
+      "target_delta": 0.25,
+      "div_yield": 0.01,
+      "strike": 92.5,
+      "bs_price": 2.126402143143455,
+      "binomial_american_price": 2.137953426051063,
+      "diff_pct_of_premium": 0.0054323134242762
+    },
+    {
+      "dte": 75,
+      "target_delta": 0.25,
+      "div_yield": 0.02,
+      "strike": 92.5,
+      "bs_price": 2.1773171071906385,
+      "binomial_american_price": 2.1840205694352615,
+      "diff_pct_of_premium": 0.003078771678449865
+    },
+    {
+      "dte": 75,
+      "target_delta": 0.25,
+      "div_yield": 0.03,
+      "strike": 92.5,
+      "bs_price": 2.2291110926645468,
+      "binomial_american_price": 2.2313084343358205,
+      "diff_pct_of_premium": 0.0009857479416367496
+    },
+    {
+      "dte": 75,
+      "target_delta": 0.25,
+      "div_yield": 0.04,
+      "strike": 92.0,
+      "bs_price": 2.1331509084117006,
+      "binomial_american_price": 2.1384812057571323,
+      "diff_pct_of_premium": 0.00249879055645458
+    },
+    {
+      "dte": 75,
+      "target_delta": 0.3,
+      "div_yield": 0.0,
+      "strike": 95.0,
+      "bs_price": 2.8708751507481183,
+      "binomial_american_price": 2.9057472789659613,
+      "diff_pct_of_premium": 0.012146863373266419
+    },
+    {
+      "dte": 75,
+      "target_delta": 0.3,
+      "div_yield": 0.01,
+      "strike": 94.5,
+      "bs_price": 2.7586751588366796,
+      "binomial_american_price": 2.7768146293345293,
+      "diff_pct_of_premium": 0.006575428223125418
+    },
+    {
+      "dte": 75,
+      "target_delta": 0.3,
+      "div_yield": 0.02,
+      "strike": 94.5,
+      "bs_price": 2.8203176566448938,
+      "binomial_american_price": 2.8316741269523735,
+      "diff_pct_of_premium": 0.004026663550016438
+    },
+    {
+      "dte": 75,
+      "target_delta": 0.3,
+      "div_yield": 0.03,
+      "strike": 94.0,
+      "bs_price": 2.7088401836815637,
+      "binomial_american_price": 2.7181202876129786,
+      "diff_pct_of_premium": 0.0034258587816732946
+    },
+    {
+      "dte": 75,
+      "target_delta": 0.3,
+      "div_yield": 0.04,
+      "strike": 94.0,
+      "bs_price": 2.7696069070534137,
+      "binomial_american_price": 2.7739698869423837,
+      "diff_pct_of_premium": 0.0015753065454374242
+    },
+    {
+      "dte": 90,
+      "target_delta": 0.2,
+      "div_yield": 0.0,
+      "strike": 90.0,
+      "bs_price": 1.768076941181789,
+      "binomial_american_price": 1.781331392579233,
+      "diff_pct_of_premium": 0.007496535410152821
+    },
+    {
+      "dte": 90,
+      "target_delta": 0.2,
+      "div_yield": 0.01,
+      "strike": 90.0,
+      "bs_price": 1.8174655441782528,
+      "binomial_american_price": 1.8259960282959347,
+      "diff_pct_of_premium": 0.0046936153177742
+    },
+    {
+      "dte": 90,
+      "target_delta": 0.2,
+      "div_yield": 0.02,
+      "strike": 89.5,
+      "bs_price": 1.7456810565078085,
+      "binomial_american_price": 1.7563047198548376,
+      "diff_pct_of_premium": 0.00608568404143739
+    },
+    {
+      "dte": 90,
+      "target_delta": 0.2,
+      "div_yield": 0.03,
+      "strike": 89.5,
+      "bs_price": 1.7945322135320392,
+      "binomial_american_price": 1.801500439448167,
+      "diff_pct_of_premium": 0.0038830319475919965
+    },
+    {
+      "dte": 90,
+      "target_delta": 0.2,
+      "div_yield": 0.04,
+      "strike": 89.5,
+      "bs_price": 1.8444014965393105,
+      "binomial_american_price": 1.8481036394825814,
+      "diff_pct_of_premium": 0.0020072326715290995
+    },
+    {
+      "dte": 90,
+      "target_delta": 0.25,
+      "div_yield": 0.0,
+      "strike": 92.5,
+      "bs_price": 2.442243620474019,
+      "binomial_american_price": 2.4735673283664887,
+      "diff_pct_of_premium": 0.012825791673637312
+    },
+    {
+      "dte": 90,
+      "target_delta": 0.25,
+      "div_yield": 0.01,
+      "strike": 92.0,
+      "bs_price": 2.355423948798283,
+      "binomial_american_price": 2.3708260462542095,
+      "diff_pct_of_premium": 0.006538991617107558
+    },
+    {
+      "dte": 90,
+      "target_delta": 0.25,
+      "div_yield": 0.02,
+      "strike": 92.0,
+      "bs_price": 2.4167547638382074,
+      "binomial_american_price": 2.4260267850562296,
+      "diff_pct_of_premium": 0.00383655857712955
+    },
+    {
+      "dte": 90,
+      "target_delta": 0.25,
+      "div_yield": 0.03,
+      "strike": 92.0,
+      "bs_price": 2.4792297258873033,
+      "binomial_american_price": 2.482742741380519,
+      "diff_pct_of_premium": 0.0014169786109508795
+    },
+    {
+      "dte": 90,
+      "target_delta": 0.25,
+      "div_yield": 0.04,
+      "strike": 91.5,
+      "bs_price": 2.390709433509166,
+      "binomial_american_price": 2.3946446954424547,
+      "diff_pct_of_premium": 0.0016460645020805907
+    },
+    {
+      "dte": 90,
+      "target_delta": 0.3,
+      "div_yield": 0.0,
+      "strike": 94.5,
+      "bs_price": 3.093818228601747,
+      "binomial_american_price": 3.135485988640543,
+      "diff_pct_of_premium": 0.01346806986059668
+    },
+    {
+      "dte": 90,
+      "target_delta": 0.3,
+      "div_yield": 0.01,
+      "strike": 94.0,
+      "bs_price": 2.9931465333698517,
+      "binomial_american_price": 3.0161872652187998,
+      "diff_pct_of_premium": 0.007697829555644078
+    },
+    {
+      "dte": 90,
+      "target_delta": 0.3,
+      "div_yield": 0.02,
+      "strike": 94.0,
+      "bs_price": 3.066264650726539,
+      "binomial_american_price": 3.081113173320151,
+      "diff_pct_of_premium": 0.0048425443609681216
+    },
+    {
+      "dte": 90,
+      "target_delta": 0.3,
+      "div_yield": 0.03,
+      "strike": 94.0,
+      "bs_price": 3.140614080397076,
+      "binomial_american_price": 3.1478149196439107,
+      "diff_pct_of_premium": 0.0022928125081590313
+    },
+    {
+      "dte": 90,
+      "target_delta": 0.3,
+      "div_yield": 0.04,
+      "strike": 93.5,
+      "bs_price": 3.0380188109285995,
+      "binomial_american_price": 3.042691991430616,
+      "diff_pct_of_premium": 0.0015382329053413497
+    }
+  ],
+  "max_diff_pct_of_premium": 0.01346806986059668,
+  "max_diff_at": {
+    "dte": 90,
+    "target_delta": 0.3,
+    "div_yield": 0.0,
+    "strike": 94.5,
+    "bs_price": 3.093818228601747,
+    "binomial_american_price": 3.135485988640543,
+    "diff_pct_of_premium": 0.01346806986059668
+  },
+  "decision_threshold": 0.02,
+  "decision": "black_scholes"
+}
