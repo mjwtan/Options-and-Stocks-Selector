@@ -51,9 +51,37 @@ real (paper) option orders alongside the equity rebalance, per
 system-spec.md S8.2's ordering. Omitting `--options-enabled` on either
 script is equity-only and never imports the options code path at all.
 
-Not yet built: system-spec.md S8.3's daily monitoring job (assignment-risk
-checks, 21-DTE rolling, expiry-week flags) - the options layer here covers
-the weekly decide-and-execute path only.
+## Daily monitoring and performance tracking
+
+```
+python daily_monitor.py --options-enabled     # S8.3/S9.2/S9.3 - alert-only, submits no orders
+python track_performance.py                   # S14 - actual vs equal-weight vs SPY, per archived week
+```
+
+`daily_monitor.py` checks assignment risk, 21-DTE/expiry-week flags, option
+delta drift, day-over-day regime moves, and equity stop-losses - it never
+closes or opens a position on its own. `track_performance.py` reads every
+week archived under `history/<date>/` (written automatically by
+`position_sizing.py`) and recomputes, against today's live prices, how that
+week's picks have actually done vs. equal-weighting the same names vs. SPY -
+equity positions only, not options premium. Writes `history/performance_summary.csv`.
+
+## Automation (system-spec.md S9)
+
+```
+.\scheduling\register_tasks.ps1 -OptionsEnabled
+```
+
+Registers two Windows Task Scheduler jobs: `OptionsSelector-DailyMonitor`
+(weekdays 08:00 - runs `daily_monitor.py` + `track_performance.py`) and
+`OptionsSelector-WeeklySizing` (Mondays 07:30 - runs `position_sizing.py`
+only). Neither submits a trade automatically - the weekly job computes
+`target_positions.csv` and archives it; you review it and run
+`trade_from_csv.py` yourself. Refresh `top20.csv` (the weekly LLM prompt)
+before the Monday run, or it fails closed on the staleness guard.
+
+Inspect: `Get-ScheduledTask -TaskName "OptionsSelector-*"`.
+Remove: `Get-ScheduledTask -TaskName "OptionsSelector-*" | Unregister-ScheduledTask -Confirm:$false`.
 
 ## Tests
 
