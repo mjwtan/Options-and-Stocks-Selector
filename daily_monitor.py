@@ -276,6 +276,11 @@ def main():
     }, indent=2, default=str))
     print(f"Wrote {log_path}")
 
+    # Heartbeat records that the job *ran*, independent of whether it found
+    # something to alert on - those are different concerns (S15.5).
+    from heartbeat import record_heartbeat
+    record_heartbeat("daily_monitor")
+
     if any(a.severity == "warning" for a in alerts):
         sys.exit(2)  # non-zero so a scheduled task shows as "needs attention" without being a hard failure
 

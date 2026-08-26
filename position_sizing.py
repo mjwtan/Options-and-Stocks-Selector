@@ -968,6 +968,20 @@ def run_pipeline(csv_path, output_path, cfg: Config, basis="equity", force=False
     log_path = LOG_DIR / f"run_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.json"
     log_path.write_text(json.dumps(run_log, indent=2, default=str))
 
+    # S16 validation ledger - written from run_log now, before archive_run
+    # below adds today's own folder to history/ (so _previous_week_weights
+    # correctly finds last week's, not this run's own, output).
+    from validation_ledger import append_ledger_row, append_per_name_rows, build_ledger_row, build_per_name_rows
+
+    ledger_row = build_ledger_row(run_log, HISTORY_DIR, REGIME_STATE_PATH)
+    append_ledger_row(ledger_row, HISTORY_DIR / "validation_ledger.csv")
+
+    per_name_rows = build_per_name_rows(run_log)
+    rank_by_ticker = df.set_index("ticker")["ranking"].to_dict()
+    for row in per_name_rows:
+        row["rank"] = rank_by_ticker.get(row["ticker"])
+    append_per_name_rows(per_name_rows, HISTORY_DIR / "validation_ledger_per_name.csv")
+
     history_dir = archive_run(csv_path, output_path, log_path, HISTORY_DIR, run_date=today)
 
     # Only mark this file as "processed" once the run completed successfully,
@@ -991,7 +1005,8 @@ def run_pipeline(csv_path, output_path, cfg: Config, basis="equity", force=False
             f" {risk_result.elapsed_ms:.0f}ms)"
         )
     else:
-        print(f"[{risk_result.risk_engine_used}] sigma_p={sigma_p:.3f}  k_vol={k_vol:.3f}{risk_dry_run_note}")
+        fallback_note = f"  [FALLBACK: {risk_result.fallback_reason}]" if risk_result.fallback_reason else ""
+        print(f"[{risk_result.risk_engine_used}] sigma_p={sigma_p:.3f}  k_vol={k_vol:.3f}{risk_dry_run_note}{fallback_note}")
     print(
         f"k_regime={k_regime:.2f}{regime_dry_run_note}{regime_override_note}"
         f"  distance={regime_result['distance']:+.2%} vs {regime_result['benchmark_used']} 200d SMA"
@@ -1003,6 +1018,10 @@ def run_pipeline(csv_path, output_path, cfg: Config, basis="equity", force=False
         print(f"  (regime: crossing blocked, {regime_result['crossing_day_count']}/{cfg.regime_confirm_days} confirmation days)")
     if dropped:
         print(f"Dropped by floor constraint: {dropped}")
+
+    from heartbeat import record_heartbeat
+    record_heartbeat("weekly_sizing")
+
     return out
 
 
