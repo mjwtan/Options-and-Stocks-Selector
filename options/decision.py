@@ -186,6 +186,38 @@ def decide_instrument_for_name(
     div_yield: float,
     cfg: DecisionConfig,
 ) -> InstrumentDecision:
+    """Never lets an options-provider failure crash the run (system-spec.md
+    S15.5: "chain fetch fails for one name -> fall back to shares... for
+    all names -> alert, run equity-only, continue"). Any exception from the
+    chain/pricing calls below - a network error, an unapproved account, a
+    provider outage - becomes a shares fallback with the error as the
+    reason, same as any other S5.7 fallback. compute_instrument_decisions()
+    checks whether *every* name failed this way and raises a distinct,
+    louder alert for that case - a provider-wide outage is a different
+    problem than one bad ticker."""
+    try:
+        return _decide_instrument_for_name_impl(
+            ticker, ranking, expected_horizon_days, weight, sigma_realised, spot,
+            portfolio_value, valuation_date, options_broker, earnings_calendar, div_yield, cfg,
+        )
+    except Exception as e:
+        return InstrumentDecision(ticker, "shares", f"options decision failed unexpectedly: {e!r}")
+
+
+def _decide_instrument_for_name_impl(
+    ticker: str,
+    ranking: int,
+    expected_horizon_days: float,
+    weight: float,
+    sigma_realised: float,
+    spot: float,
+    portfolio_value: float,
+    valuation_date: date,
+    options_broker: Optional[OptionsBroker],
+    earnings_calendar: EarningsCalendar,
+    div_yield: float,
+    cfg: DecisionConfig,
+) -> InstrumentDecision:
     if options_broker is None:
         return InstrumentDecision(ticker, "shares", "OPTIONS_ENABLED is False")
 
@@ -345,5 +377,22 @@ def compute_instrument_decisions(
             div_yield=dividend_yields.get(ticker, 0.0),
             cfg=cfg,
         )
+
+    # system-spec.md S15.5: "chain fetch fails for all names -> alert, run
+    # equity-only for the week, continue" - distinguished from ordinary
+    # per-name S5.7 fallbacks (thin chain, no matching expiry, etc.) by
+    # checking whether *every* name eligible for an options expression hit
+    # the exception path in decide_instrument_for_name, which only happens
+    # for genuine failures (network, auth, provider outage), never for a
+    # normal business-logic fallback.
+    if options_broker is not None:
+        eligible = [t for t in decisions if _permitted_instruments(int(d.loc[t, "ranking"])) != {"shares"}]
+        failed = [t for t in eligible if decisions[t].reason.startswith("options decision failed unexpectedly")]
+        if eligible and len(failed) == len(eligible):
+            print(
+                f"  WARNING: options decision failed for all {len(eligible)} eligible name(s) - "
+                f"the options provider appears to be down or misconfigured, not a per-name data issue. "
+                f"Continuing equity-only for this run (S15.5). First failure: {decisions[failed[0]].reason}"
+            )
 
     return survivors_w, decisions, skips

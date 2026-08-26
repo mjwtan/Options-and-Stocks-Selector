@@ -84,6 +84,21 @@ class FakeOptionsBroker(OptionsBroker):
         return 0
 
 
+class RaisingOptionsBroker(OptionsBroker):
+    """Simulates a provider outage/auth failure - system-spec.md S15.5."""
+    def chain(self, symbol, expiry_range):
+        raise RuntimeError("simulated provider outage")
+
+    def submit_option(self, contract, qty, side):
+        raise NotImplementedError
+
+    def option_positions(self):
+        return []
+
+    def buying_power_reserved(self):
+        return 0
+
+
 def _synthetic_contract(contract_type, strike, expiry, vol, oi=500):
     price = price_black_scholes(contract_type, SPOT, strike, expiry, VALUATION_DATE, RATE, DIV_YIELD, vol)
     cp = "C" if contract_type == "call" else "P"
@@ -315,3 +330,78 @@ def test_max_skip_fraction_aborts_the_run():
             options_broker=None, earnings_calendar=FakeEarningsCalendar(), cal=TradingCalendar("NYSE"),
             dividend_yields={}, cfg=DecisionConfig(), redistribute_fn=_redistribute_fn_factory(adv20),
         )
+
+
+# --- system-spec.md S15.5: provider failures must not crash the run ------
+
+def test_provider_exception_falls_back_to_shares_not_a_crash():
+    result = decide_instrument_for_name(
+        ticker="TEST", ranking=10, expected_horizon_days=45, weight=0.05, sigma_realised=SIGMA_REALISED,
+        spot=SPOT, portfolio_value=1_000_000, valuation_date=VALUATION_DATE,
+        options_broker=RaisingOptionsBroker(), earnings_calendar=FakeEarningsCalendar(),
+        div_yield=0.0, cfg=DecisionConfig(),
+    )
+    assert result.instrument == "shares"
+    assert "options decision failed unexpectedly" in result.reason
+    assert "simulated provider outage" in result.reason
+
+
+def test_all_names_failing_logs_a_provider_outage_warning(capsys):
+    tickers = ["AAA", "BBB", "CCC"]
+    df = _make_df(tickers, [6, 7, 8])  # all eligible for options (rank 6-15)
+    w = pd.Series([0.4, 0.3, 0.3], index=tickers)
+    sigma = pd.Series([0.20] * 3, index=tickers)
+    adv20 = pd.Series([10_000_000] * 3, index=tickers)
+    spot = pd.Series([SPOT] * 3, index=tickers)
+
+    survivors, decisions, _skips = compute_instrument_decisions(
+        df=df, w_constrained=w, sigma=sigma, adv20=adv20, spot=spot, portfolio_value=1_000_000,
+        valuation_date=VALUATION_DATE, equity_broker=FakeEquityBroker(),
+        options_broker=RaisingOptionsBroker(), earnings_calendar=FakeEarningsCalendar(), cal=TradingCalendar("NYSE"),
+        dividend_yields={}, cfg=DecisionConfig(), redistribute_fn=_redistribute_fn_factory(adv20),
+    )
+
+    assert all(d.instrument == "shares" for d in decisions.values())  # equity-only continuation, not a crash
+    assert survivors.sum() == pytest.approx(1.0)
+    captured = capsys.readouterr()
+    assert "options provider appears to be down" in captured.out
+
+
+def test_one_name_failing_does_not_trigger_the_outage_warning(capsys):
+    """A single bad ticker is an ordinary S5.7 fallback, not a provider
+    outage - the loud warning should only fire when *every* eligible name
+    fails the same way."""
+    expiry = VALUATION_DATE + timedelta(days=45)
+    tickers = ["AAA", "BBB"]
+    df = _make_df(tickers, [6, 7])
+    w = pd.Series([0.5, 0.5], index=tickers)
+    sigma = pd.Series([SIGMA_REALISED] * 2, index=tickers)
+    adv20 = pd.Series([10_000_000] * 2, index=tickers)
+    spot = pd.Series([SPOT] * 2, index=tickers)
+
+    class MixedBroker(OptionsBroker):
+        def chain(self, symbol, expiry_range):
+            if symbol == "AAA":
+                raise RuntimeError("boom")
+            return _put_chain_for_rich_iv(expiry)  # BBB gets a normal chain
+
+        def submit_option(self, contract, qty, side):
+            raise NotImplementedError
+
+        def option_positions(self):
+            return []
+
+        def buying_power_reserved(self):
+            return 0
+
+    _survivors, decisions, _skips = compute_instrument_decisions(
+        df=df, w_constrained=w, sigma=sigma, adv20=adv20, spot=spot, portfolio_value=1_000_000,
+        valuation_date=VALUATION_DATE, equity_broker=FakeEquityBroker(),
+        options_broker=MixedBroker(), earnings_calendar=FakeEarningsCalendar(), cal=TradingCalendar("NYSE"),
+        dividend_yields={}, cfg=DecisionConfig(), redistribute_fn=_redistribute_fn_factory(adv20),
+    )
+
+    assert "options decision failed unexpectedly" in decisions["AAA"].reason
+    assert decisions["BBB"].instrument == "short_put"
+    captured = capsys.readouterr()
+    assert "options provider appears to be down" not in captured.out
