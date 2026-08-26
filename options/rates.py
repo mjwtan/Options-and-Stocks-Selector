@@ -7,6 +7,7 @@ Falls back to a fixed constant if the fetch fails - logged, never silent.
 
 from __future__ import annotations
 
+from datetime import date, datetime, timezone
 from typing import Optional
 
 import yfinance as yf
@@ -38,3 +39,20 @@ def fetch_dividend_yield(ticker: str) -> float:
         return float(yld) if yld else 0.0
     except Exception:
         return 0.0
+
+
+def fetch_next_ex_dividend_date(ticker: str) -> Optional[date]:
+    """Next ex-dividend date, or None if unknown/non-payer/lookup failed.
+    Feeds daily_monitor.py's S8.3 assignment-risk check: a deep-ITM short
+    call with an ex-dividend date before its expiry is the specific early-
+    exercise risk the spec names ("exercised early to capture dividends").
+    None means "couldn't determine" - callers must not treat that as "no
+    ex-dividend date exists"."""
+    try:
+        info = yf.Ticker(ticker).info
+        ts = info.get("exDividendDate")
+        if not ts:
+            return None
+        return datetime.fromtimestamp(int(ts), tz=timezone.utc).date()
+    except Exception:
+        return None

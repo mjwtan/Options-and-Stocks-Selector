@@ -69,6 +69,7 @@ class Position:
     symbol: str
     qty: float
     market_value: float
+    unrealized_plpc: Optional[float] = None  # fraction of cost basis, e.g. -0.15 = -15%; used by daily_monitor.py's stop-loss check
 
 
 @dataclass

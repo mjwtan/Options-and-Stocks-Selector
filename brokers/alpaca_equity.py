@@ -50,7 +50,10 @@ class AlpacaEquityBroker(EquityBroker):
 
     def positions(self) -> list[Position]:
         return [
-            Position(symbol=p.symbol, qty=float(p.qty), market_value=float(p.market_value))
+            Position(
+                symbol=p.symbol, qty=float(p.qty), market_value=float(p.market_value),
+                unrealized_plpc=float(p.unrealized_plpc) if p.unrealized_plpc is not None else None,
+            )
             for p in self._client.get_all_positions()
         ]
 
