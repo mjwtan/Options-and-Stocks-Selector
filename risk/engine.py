@@ -2,13 +2,18 @@
 Computes k_risk (CVaR-targeted) or falls back to the analytic k_vol
 (volatility-targeted), and always logs both for comparison (S12).
 
-RiskConfig.risk_engine defaults to "analytic", not "montecarlo" as S11's
-config table lists. Build order S13 step 8 says switch the default only
-after both the correctness tests (S9, all passing - see risk/tests/) AND
-the CVAR_TARGET calibration against historical weights (S7) are done. The
-calibration step needs months of live paper-trading weights this session
-doesn't have, so the conservative default stays until that's done - flip it
-with --risk-engine montecarlo once calibrated.
+RiskConfig.risk_engine defaults to "montecarlo", matching S11's config
+table. Build order S13 step 8's own advice was to switch only after the
+CVAR_TARGET calibration against months of historical live weights (S7) -
+that calibration still hasn't happened (no live run history exists yet).
+The switch was made anyway, by explicit user choice, ahead of that
+validation step. `sigma_p_analytic`/`sigma_p_simulated` are still logged
+every run specifically so the gap between the two stays visible once real
+weights accumulate - use it to judge whether CVAR_TARGET needs retuning,
+or whether reverting to --risk-engine analytic would have been the better
+call. The analytic engine stays fully implemented as the fallback/reference
+either way (S6.1: "Keep the analytic path implemented... as a reference for
+validation and as a fallback for equity-only runs").
 """
 
 import time
@@ -30,7 +35,7 @@ from .measures import (
 
 @dataclass
 class RiskConfig:
-    risk_engine: str = "analytic"      # "analytic" or "montecarlo" - see module docstring on the default
+    risk_engine: str = "montecarlo"    # "analytic" or "montecarlo" - see module docstring on the default
     sigma_target: float = 0.15         # used only in analytic mode - the pre-existing vol target
     cvar_target: float = 0.25          # used only in montecarlo mode
     cvar_alpha: float = 0.95

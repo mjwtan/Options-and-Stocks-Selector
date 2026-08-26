@@ -3,4 +3,5 @@ __pycache__/
 *.pyc
 logs/
 state/
+history/
 .claude/settings.local.json

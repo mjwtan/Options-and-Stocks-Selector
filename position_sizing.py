@@ -25,11 +25,11 @@ Pipeline (spec section references in comments):
     3. Compute EWMA volatility per name (S3).
     4. Compute raw ranking/vol weights, optional risk/sentiment modifiers (S4).
     5. Apply position cap / floor / liquidity constraints (S5).
-    6. Ledoit-Wolf portfolio covariance -> risk targeting (S6): analytic
-       volatility targeting by default, or a QuantLib Monte Carlo CVaR
-       engine behind --risk-engine montecarlo (quantlib-risk-engine-spec.md,
-       see risk/engine.py). Then the continuous/confirmed/rate-limited
-       regime scalar (regime-spec.md).
+    6. Ledoit-Wolf portfolio covariance -> risk targeting (S6): a QuantLib
+       Monte Carlo CVaR engine by default (quantlib-risk-engine-spec.md,
+       see risk/engine.py), or the older analytic volatility targeting
+       behind --risk-engine analytic. Then the continuous/confirmed/
+       rate-limited regime scalar (regime-spec.md).
     7. Cross-check computed vol vs supplied volatility_index (S7, log only).
     8. Write output CSV + a full JSON run log (S9).
 
@@ -61,7 +61,9 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import sys
+import time
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -83,8 +85,10 @@ load_dotenv()
 BASE_DIR = Path(__file__).parent
 STATE_DIR = BASE_DIR / "state"
 LOG_DIR = BASE_DIR / "logs"
+HISTORY_DIR = BASE_DIR / "history"
 STATE_DIR.mkdir(exist_ok=True)
 LOG_DIR.mkdir(exist_ok=True)
+HISTORY_DIR.mkdir(exist_ok=True)
 REGIME_STATE_PATH = STATE_DIR / "regime_state.json"
 INPUT_HASH_STATE_PATH = STATE_DIR / "last_input_hash.json"
 
@@ -126,7 +130,7 @@ class Config:
     regime_dry_run: bool = False         # CLI override: compute + log k_regime but apply 1.0 to weights
 
     # --- risk engine (quantlib-risk-engine-spec.md) ---
-    risk_engine: str = "analytic"        # "analytic" (existing k_vol) or "montecarlo" (CVaR-targeted k_risk)
+    risk_engine: str = "montecarlo"      # "analytic" (existing k_vol) or "montecarlo" (CVaR-targeted k_risk) - see note below
     cvar_target: float = 0.25
     cvar_alpha: float = 0.95
     mc_n_paths: int = 50_000
@@ -305,7 +309,8 @@ def bars_to_frames(bars_df, symbols, lookback_days, cal: TradingCalendar):
     for s in symbols:
         series = close[s]
         if series.isna().any():
-            problems.append(f"{s}: {int(series.isna().sum())} missing bar(s) in the {lookback_days}-day window")
+            missing_dates = [d.date() if hasattr(d, "date") else d for d in series.index[series.isna()]]
+            problems.append(f"{s}: {len(missing_dates)} missing bar(s) at {missing_dates[:5]}")
             continue
         ok, msg = cal.validate_bar_series(series.index)
         if not ok:
@@ -315,6 +320,38 @@ def bars_to_frames(bars_df, symbols, lookback_days, cal: TradingCalendar):
         raise ValidationError("bar gaps detected:\n  " + "\n  ".join(problems))
 
     return close[symbols], volume[symbols]
+
+
+def fetch_and_validate_bars(market_data: MarketData, symbols, lookback_days, cal: TradingCalendar, max_retries=2, retry_delay_s=5):
+    """fetch_daily_bars + bars_to_frames, with a bounded retry.
+
+    A real, observed failure mode: a thinly-traded name's most recent bar
+    can lag behind every other ticker's on Alpaca's feed by a few seconds
+    at the exact moment of the fetch - bars_to_frames correctly flags this
+    as a gap (indistinguishable, at fetch time, from a genuine historical
+    hole), but it typically resolves on its own within seconds. Retrying a
+    couple of times narrows the window rather than requiring a manual
+    re-run for what is usually a transient feed-completeness lag. A gap
+    that persists across every retry is still a real gap - it raises
+    exactly as before, just after giving the feed a few chances to catch
+    up first. Does not apply to "missing bars entirely" (a ticker with no
+    data at all is not a lag, it's a real problem worth failing on
+    immediately).
+    """
+    last_error = None
+    for attempt in range(1 + max_retries):
+        bars = fetch_daily_bars(market_data, symbols, lookback_days)
+        try:
+            return bars_to_frames(bars, symbols, lookback_days, cal)
+        except ValidationError as e:
+            if "missing bars entirely" in str(e):
+                raise
+            last_error = e
+            if attempt < max_retries:
+                print(f"  {e}\n  retrying in {retry_delay_s}s (attempt {attempt + 2}/{1 + max_retries}) - "
+                      f"this usually means a thin name's bar hadn't posted yet, not a real gap")
+                time.sleep(retry_delay_s)
+    raise last_error
 
 
 def compute_ewma_vol(close: pd.DataFrame, cfg: Config, cal: TradingCalendar, seed_window: int = 60):
@@ -443,8 +480,7 @@ def fetch_benchmark_close(market_data: MarketData, cfg: Config, cal: TradingCale
     last_err = None
     for symbol in candidates:
         try:
-            bars = fetch_daily_bars(market_data, [symbol], cfg.lookback_days)
-            close, _ = bars_to_frames(bars, [symbol], cfg.lookback_days, cal)
+            close, _ = fetch_and_validate_bars(market_data, [symbol], cfg.lookback_days, cal)
             if symbol != cfg.regime_benchmark:
                 print(f"  regime benchmark {cfg.regime_benchmark!r} unavailable, using fallback {symbol!r}")
             return close[symbol], symbol
@@ -667,6 +703,32 @@ def zero_out_options_weight(w_final: pd.Series, instrument_decisions: dict) -> p
 
 
 # ---------------------------------------------------------------------------
+# Per-week archive - not in any of the mdinstructions specs; added so
+# there's a browsable, dated record of what was actually run each week
+# (input CSV, resulting positions, full run log together) to build the
+# S14 analytics work (hit rate by rank, equal-weight comparison, etc.) on
+# top of later. logs/*.json already has this data per-invocation, but
+# mixed in with every other run (including repeated test/--force runs);
+# history/ is the curated "what did we actually do this week" view.
+# ---------------------------------------------------------------------------
+
+def archive_run(csv_path, output_path, log_path, history_root: Path, run_date=None) -> Path:
+    """Copies the input CSV, output CSV, and run log into
+    history/<YYYY-MM-DD>/. Re-running on the same day overwrites that
+    day's folder rather than accumulating duplicates - the archive
+    reflects the day's final state, matching how target_positions.csv
+    itself is a single current file, not an append-only log."""
+    run_date = run_date or datetime.now(timezone.utc).date()
+    day_dir = history_root / run_date.isoformat()
+    day_dir.mkdir(parents=True, exist_ok=True)
+
+    shutil.copy2(csv_path, day_dir / f"input_{Path(csv_path).name}")
+    shutil.copy2(output_path, day_dir / Path(output_path).name)
+    shutil.copy2(log_path, day_dir / Path(log_path).name)
+    return day_dir
+
+
+# ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
 
@@ -720,8 +782,7 @@ def run_pipeline(csv_path, output_path, cfg: Config, basis="equity", force=False
     tickers = df["ticker"].tolist()
 
     print(f"Fetching {cfg.lookback_days}+ days of daily bars for {len(tickers)} symbols...")
-    bars = fetch_daily_bars(market_data, tickers, cfg.lookback_days)
-    close, volume = bars_to_frames(bars, tickers, cfg.lookback_days, cal)
+    close, volume = fetch_and_validate_bars(market_data, tickers, cfg.lookback_days, cal)
 
     print(f"Fetching regime benchmark ({cfg.regime_benchmark})...")
     benchmark_close, benchmark_used = fetch_benchmark_close(market_data, cfg, cal)
@@ -845,6 +906,7 @@ def run_pipeline(csv_path, output_path, cfg: Config, basis="equity", force=False
     cross_check_flags = cross_check(df, sigma)
 
     out = df.set_index("ticker").copy()
+    out["entry_price"] = close[tickers].iloc[-1].reindex(out.index)  # last close as of this run - track_performance.py's baseline
     out["sigma"] = sigma.reindex(out.index)
     out["weight_raw"] = w_raw.reindex(out.index)
     out["weight_after_constraints"] = w_constrained.reindex(out.index)
@@ -906,6 +968,8 @@ def run_pipeline(csv_path, output_path, cfg: Config, basis="equity", force=False
     log_path = LOG_DIR / f"run_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.json"
     log_path.write_text(json.dumps(run_log, indent=2, default=str))
 
+    history_dir = archive_run(csv_path, output_path, log_path, HISTORY_DIR, run_date=today)
+
     # Only mark this file as "processed" once the run completed successfully,
     # so a mid-pipeline failure (e.g. bad bars) can be safely retried on the same file.
     INPUT_HASH_STATE_PATH.write_text(
@@ -918,6 +982,7 @@ def run_pipeline(csv_path, output_path, cfg: Config, basis="equity", force=False
     print()
     print(f"Wrote {output_path} ({len(out)} rows, {len(w_final)} held names)")
     print(f"Wrote run log {log_path}")
+    print(f"Archived this week's run to {history_dir}")
     if risk_result.risk_engine_used == "montecarlo":
         print(
             f"[{risk_result.risk_engine_used}] sigma_p analytic={sigma_p:.3f} sim={risk_result.sigma_p_simulated:.3f}"
@@ -959,9 +1024,10 @@ def main():
     parser.add_argument("--regime-max-step", type=float, default=0.15)
     parser.add_argument("--force-regime", type=float, default=None, help="Pin k_regime to a fixed value, bypassing all regime logic")
     parser.add_argument("--regime-dry-run", action="store_true", help="Compute and log k_regime without applying it to weights")
-    parser.add_argument("--risk-engine", choices=["analytic", "montecarlo"], default="analytic",
-                         help="analytic = existing volatility-targeted k_vol; montecarlo = CVaR-targeted k_risk via QuantLib "
-                              "(default analytic until CVAR_TARGET is calibrated against live weights - spec S13 step 8)")
+    parser.add_argument("--risk-engine", choices=["analytic", "montecarlo"], default="montecarlo",
+                         help="montecarlo = CVaR-targeted k_risk via QuantLib (default; system-spec.md S6.5 - note it "
+                              "hasn't gone through the spec's own recommended live-weight calibration yet, see module "
+                              "docstring); analytic = the older volatility-targeted k_vol, kept as a reference/fallback")
     parser.add_argument("--cvar-target", type=float, default=0.25, help="Annualised CVaR target (montecarlo engine only)")
     parser.add_argument("--cvar-alpha", type=float, default=0.95)
     parser.add_argument("--mc-paths", type=int, default=50_000, dest="mc_n_paths")
