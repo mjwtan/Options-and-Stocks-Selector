@@ -2,6 +2,11 @@
 __pycache__/
 *.pyc
 logs/
+# state/ and history/ are local run data, not source - ignored for local
+# development. The GitHub Actions workflows (.github/workflows/) force-add
+# (git add -f) specific paths under these on purpose, so CI runs have
+# continuity across the ephemeral runner filesystem (system-spec.md
+# S15.4) - that's intentional, not a workaround for this ignore rule.
 state/
 history/
 .claude/settings.local.json

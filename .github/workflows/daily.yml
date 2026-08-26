@@ -1,0 +1,52 @@
+name: Daily Monitor
+
+# system-spec.md S9.2/S9.3/S8.3 - alert-only, never submits an order.
+# Tue-Fri only; Monday morning is the weekly job's (S15.2's job split).
+# daily_monitor.py already no-ops cleanly on a NYSE holiday itself (checks
+# TradingCalendar.is_trading_day), so no extra gating needed here beyond
+# the cron's own day-of-week restriction.
+#
+# See weekly.yml for the secrets/permissions this workflow also needs, and
+# the note on cron's fixed-UTC DST limitation.
+
+on:
+  schedule:
+    - cron: "15 12 * * 2-5"
+  workflow_dispatch: {}
+
+jobs:
+  daily-monitor:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # daily_monitor.py exits 2 (non-zero) when it has a warning alert to
+      # report - deliberately so this step shows red in the Actions tab and
+      # GitHub's default failed-workflow email fires, which doubles as the
+      # S15.5 "alert channel" requirement without needing a separate
+      # Slack/email integration. This is a real alert, not a bug in the
+      # workflow, when this step is the one that's red.
+      - name: Run daily monitor
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+        run: python daily_monitor.py --options-enabled
+
+      - name: Commit state (heartbeat, regime) back to the repo
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -f state/
+          git diff --staged --quiet || git commit -m "Automated daily monitor run ($(date -u +%Y-%m-%d))"
+          git push

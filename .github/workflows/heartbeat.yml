@@ -1,0 +1,36 @@
+name: Heartbeat Check
+
+# system-spec.md S15.5 dead-man's-switch, checking the state/heartbeat.json
+# committed back to the repo by the other three workflows. Deliberately
+# minimal - no Alpaca calls, nothing that can itself flake - a heartbeat
+# checker that fails for unrelated reasons defeats the point.
+#
+# Note: GitHub disables a repository's scheduled workflows automatically
+# after 60 days with no repository activity at all. The weekly/daily/report
+# workflows' own commit-back-to-the-repo step is what keeps this from ever
+# happening as long as at least one of them is running successfully - if
+# ALL of them silently stop, this safeguard eventually stops firing too,
+# which is exactly the "laptop closed for weeks" scenario S15.3 warns
+# about, just relocated to "repo gone quiet." There's no way to detect that
+# specific failure mode from inside GitHub Actions itself.
+
+on:
+  schedule:
+    - cron: "0 13 * * 1-5"
+  workflow_dispatch: {}
+
+jobs:
+  heartbeat:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # check_heartbeat.py exits 1 if anything is stale, which shows this
+      # step (and the workflow run) as red - that's the alert, via
+      # GitHub's default failed-workflow email, same mechanism as daily.yml.
+      - name: Check heartbeats
+        run: python scheduling/check_heartbeat.py

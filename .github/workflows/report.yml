@@ -1,0 +1,44 @@
+name: Report
+
+# system-spec.md S14/S15.1/S15.2 - Friday after close. Updates
+# history/performance_summary.csv (actual vs. equal-weight vs. SPY).
+# Structurally incapable of submitting an order: track_performance.py only
+# ever imports AlpacaMarketData (read-only quotes/bars), never a broker.
+#
+# See weekly.yml for the secrets/permissions this workflow also needs, and
+# the note on cron's fixed-UTC DST limitation.
+
+on:
+  schedule:
+    - cron: "30 21 * * 5"
+  workflow_dispatch: {}
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run performance report
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+        run: python track_performance.py
+
+      - name: Commit history and state back to the repo
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -f history/ state/
+          git diff --staged --quiet || git commit -m "Automated performance report ($(date -u +%Y-%m-%d))"
+          git push

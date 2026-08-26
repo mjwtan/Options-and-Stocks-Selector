@@ -1,0 +1,62 @@
+name: Weekly Sizing
+
+# system-spec.md S9.1/S15.1/S15.2 - compute-only. Does NOT run
+# trade_from_csv.py; you review target_positions.csv and submit trades
+# yourself. Self-gated to the week's actual first NYSE trading day
+# (scheduling/is_weekly_run_day.py) via a Mon-Fri cron, so a holiday
+# Monday shifts to Tuesday instead of silently skipping the week (S15.2).
+#
+# Cron time is a fixed UTC offset computed for 08:15 America/New_York in
+# EDT (UTC-4) - like the local Task Scheduler setup, this drifts by an
+# hour during the ~1-2 week windows each spring/autumn when US and UK DST
+# transition dates don't align (GitHub Actions cron has no timezone-aware
+# trigger either). Not worth a self-check for a job this infrequent and
+# non-time-critical; adjust the cron expression around late March / early
+# November if it matters to you.
+#
+# Requires repository secrets ALPACA_API_KEY, ALPACA_SECRET_KEY, and
+# (optional) FINNHUB_API_KEY - Settings -> Secrets and variables -> Actions.
+# Requires Settings -> Actions -> General -> Workflow permissions ->
+# "Read and write permissions", so the commit-back step below can push.
+
+on:
+  schedule:
+    - cron: "15 12 * * 1-5"
+  workflow_dispatch: {}
+
+jobs:
+  weekly-sizing:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Check if today is the week's first trading day
+        id: gate
+        continue-on-error: true
+        run: python scheduling/is_weekly_run_day.py
+
+      - name: Run weekly sizing
+        if: steps.gate.outcome == 'success'
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+        run: python position_sizing.py top20.csv --output target_positions.csv --options-enabled
+
+      - name: Commit state, history, and target_positions.csv back to the repo
+        if: steps.gate.outcome == 'success'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -f state/ history/ target_positions.csv
+          git diff --staged --quiet || git commit -m "Automated weekly sizing run ($(date -u +%Y-%m-%d))"
+          git push

@@ -66,22 +66,63 @@ week archived under `history/<date>/` (written automatically by
 week's picks have actually done vs. equal-weighting the same names vs. SPY -
 equity positions only, not options premium. Writes `history/performance_summary.csv`.
 
-## Automation (system-spec.md S9)
+## Validation ledger (system-spec.md S16)
+
+Every weekly `position_sizing.py` run appends one row to
+`history/validation_ledger.csv` (portfolio value, cash%, k_vol/k_risk/
+k_regime, turnover, skip/fallback counts, MC diagnostics) and one row per
+name to `history/validation_ledger_per_name.csv` (rank, weight,
+instrument). Two columns per table - `actual_return_1w`/
+`equal_weight_return_1w`, and `forward_return_1w`/`forward_return_4w` -
+can't be known until that much time has actually passed; `track_performance.py`
+backfills them automatically once it is, using the real historical price
+at that date rather than whatever the price happens to be when it runs.
+
+The S16.2 decision rules built on top of this ledger (does rank predict
+forward returns, does sizing beat equal-weight, is the regime filter worth
+its cost, etc.) aren't implemented yet - the spec is explicit those need
+12-26 weeks of real rows before they mean anything, and there are zero
+rows as of this build. Come back to that once the ledger has real history
+in it.
+
+## Automation
+
+Two ways to run this on a schedule - system-spec.md S15.3 is explicit that
+only one of them is meant for anything that matters:
+
+**GitHub Actions** (`.github/workflows/`) - the recommended path while
+paper trading (S15.3). Four workflows: `weekly.yml` (Mon-Fri cron,
+self-gated to the week's actual first trading day), `daily.yml` (Tue-Fri),
+`report.yml` (Friday after close), `heartbeat.yml` (S15.5's dead-man's-
+switch). None of them run `trade_from_csv.py`. Each commits `state/`/
+`history/` back to the repo so the next run (a fresh container each time)
+has continuity - this also happens to keep the repo from going 60 days
+without activity, which is when GitHub auto-disables a repo's scheduled
+workflows.
+
+Setup:
+1. Repo Settings -> Secrets and variables -> Actions -> add `ALPACA_API_KEY`,
+   `ALPACA_SECRET_KEY`, and optionally `FINNHUB_API_KEY`.
+2. Repo Settings -> Actions -> General -> Workflow permissions -> "Read and
+   write permissions" (needed for the commit-back step).
+3. Actions tab -> pick a workflow -> "Run workflow" to test manually before
+   trusting the schedule.
+
+**Windows Task Scheduler** (`scheduling/register_tasks.ps1`) -
+development/testing only (S15.3: "a missed run because the laptop was
+closed is a silent failure"). Registers the same four jobs locally:
 
 ```
 .\scheduling\register_tasks.ps1 -OptionsEnabled
 ```
 
-Registers two Windows Task Scheduler jobs: `OptionsSelector-DailyMonitor`
-(weekdays 08:00 - runs `daily_monitor.py` + `track_performance.py`) and
-`OptionsSelector-WeeklySizing` (Mondays 07:30 - runs `position_sizing.py`
-only). Neither submits a trade automatically - the weekly job computes
-`target_positions.csv` and archives it; you review it and run
-`trade_from_csv.py` yourself. Refresh `top20.csv` (the weekly LLM prompt)
-before the Monday run, or it fails closed on the staleness guard.
-
 Inspect: `Get-ScheduledTask -TaskName "OptionsSelector-*"`.
 Remove: `Get-ScheduledTask -TaskName "OptionsSelector-*" | Unregister-ScheduledTask -Confirm:$false`.
+
+Running both is possible but they'll maintain two independent copies of
+`state/`/`history/` (local disk vs. the repo) that drift apart from each
+other over time - harmless since neither submits a trade, but confusing if
+you compare their logs. Pick one as authoritative once you've decided.
 
 ## Tests
 
