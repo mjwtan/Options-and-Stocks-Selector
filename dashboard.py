@@ -1,10 +1,18 @@
 """
-Streamlit dashboard - a read-only view over everything this system already
-logs. Never constructs an order-capable code path: only AlpacaEquityBroker/
-AlpacaOptionsBroker (position/account reads) and plain file reads from
-logs/, history/, state/. Structurally the same "can't trade" guarantee
-track_performance.py has, for the same reason (system-spec.md S15.1:
-report should not be capable of submitting an order, not merely decline to).
+Streamlit dashboard - mostly a read-only view over everything this system
+already logs (account/positions, run logs, validation ledger, performance
+summary, daily monitor alerts, heartbeats, GitHub Actions status).
+
+One exception, by explicit user choice: the "Rebalance to target" section
+on the Positions page can submit real (paper) orders. It reuses
+trade_from_csv.py's own planning/execution functions rather than
+reimplementing order logic, and is gated behind a mandatory review
+checkbox that resets after every execution - the checkbox and the button
+are the only thing standing between clicking around this page and a real
+order hitting the paper account, so neither should be made more
+convenient than they already are. Every execution is logged to
+logs/dashboard_execution_*.json for the same reason run_*.json exists -
+retrofitting an audit trail after the fact is impossible.
 
 Usage:
     streamlit run dashboard.py
@@ -13,13 +21,18 @@ Usage:
 from __future__ import annotations
 
 import glob
+import io
 import json
 import os
+import re
+import subprocess
+from contextlib import redirect_stdout
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
 import plotly.graph_objects as go
+import requests
 import streamlit as st
 from dotenv import load_dotenv
 
@@ -31,6 +44,9 @@ BASE_DIR = Path(__file__).parent
 HISTORY_DIR = BASE_DIR / "history"
 LOG_DIR = BASE_DIR / "logs"
 STATE_DIR = BASE_DIR / "state"
+
+HEARTBEAT_JOBS = ["weekly_sizing", "daily_monitor", "report"]
+HEARTBEAT_MAX_AGE_DAYS = 8
 
 # Fixed categorical order (Okabe-Ito - colorblind-safe), assigned by
 # entity identity, never by rank or cycled in from a generic palette.
@@ -115,6 +131,43 @@ def load_performance_summary():
     if not path.exists():
         return pd.DataFrame()
     return pd.read_csv(path)
+
+
+def get_github_repo_slug():
+    try:
+        url = subprocess.check_output(
+            ["git", "config", "--get", "remote.origin.url"], cwd=BASE_DIR, text=True, timeout=5,
+        ).strip()
+    except (subprocess.CalledProcessError, OSError):
+        return None
+    m = re.search(r"github\.com[:/]([^/]+)/([^/.]+?)(?:\.git)?$", url)
+    return f"{m.group(1)}/{m.group(2)}" if m else None
+
+
+@st.cache_data(ttl=120)
+def load_github_actions_status():
+    """Latest run per workflow, via the public unauthenticated API - fine
+    for a public repo (no token needed) and cached for 2 minutes so a busy
+    dashboard session doesn't get near the 60 req/hour unauthenticated
+    rate limit."""
+    slug = get_github_repo_slug()
+    if slug is None:
+        return None, None
+    try:
+        resp = requests.get(
+            f"https://api.github.com/repos/{slug}/actions/runs", params={"per_page": 30}, timeout=10,
+        )
+        resp.raise_for_status()
+        runs = resp.json().get("workflow_runs", [])
+    except (requests.RequestException, ValueError):
+        return slug, None
+
+    latest_by_workflow = {}
+    for run in runs:
+        name = run.get("name", "unknown")
+        if name not in latest_by_workflow:
+            latest_by_workflow[name] = run
+    return slug, latest_by_workflow
 
 
 def load_recent_alerts(days=14):
@@ -236,6 +289,106 @@ def render_positions():
             for p in option_positions
         ])
         st.dataframe(opt_df, use_container_width=True, hide_index=True)
+
+    st.divider()
+    render_rebalance_and_approve(account, positions, option_positions)
+
+
+def render_rebalance_and_approve(account, positions, option_positions):
+    st.subheader("Rebalance to target_positions.csv")
+
+    csv_path = BASE_DIR / "target_positions.csv"
+    if not csv_path.exists():
+        st.info("No target_positions.csv found - run position_sizing.py first.")
+        return
+
+    from trade_from_csv import load_option_targets, load_targets, plan_actions, plan_option_actions
+
+    try:
+        targets = load_targets(str(csv_path))
+    except (ValueError, OSError) as e:
+        st.error(f"Couldn't read target_positions.csv: {e}")
+        return
+
+    options_enabled = st.checkbox("Include option targets (short puts / long calls) from this CSV", value=True)
+    option_targets = load_option_targets(str(csv_path)) if options_enabled else {}
+
+    current_values = {p.symbol: p.market_value for p in positions}
+    actions = plan_actions(targets, current_values, account.equity)
+    close_occ, open_targets = plan_option_actions(option_targets, option_positions or [])
+
+    if not actions and not close_occ and not open_targets:
+        st.success("Nothing to do - positions already match targets (within the no-trade band).")
+        return
+
+    if actions:
+        plan_df = pd.DataFrame(actions, columns=["ticker", "action", "current_$", "target_$", "order_$"])
+        for c in ["current_$", "target_$", "order_$"]:
+            plan_df[c] = plan_df[c].map(lambda v: f"${v:,.2f}")
+        st.dataframe(plan_df, use_container_width=True, hide_index=True)
+    if close_occ or open_targets:
+        st.caption("Option changes:")
+        opt_rows = [{"occ_symbol": occ, "action": "close"} for occ in close_occ] + [
+            {"occ_symbol": t.occ_symbol, "action": f"open {t.instrument}", "contracts": t.contracts}
+            for t in open_targets
+        ]
+        st.dataframe(pd.DataFrame(opt_rows), use_container_width=True, hide_index=True)
+
+    st.warning(
+        "Approving submits real (paper) orders to Alpaca immediately - equity sells/closes first, "
+        "then confirmed equity buys, then option orders, same order trade_from_csv.py uses."
+    )
+    confirm_key = "approve_confirm_checkbox"
+    confirmed = st.checkbox("I have reviewed this plan and want to submit these orders now.", key=confirm_key)
+    if st.button("Approve & Execute", type="primary", disabled=not confirmed):
+        execute_approved_plan(account, actions, option_targets, close_occ, open_targets, option_positions)
+        st.session_state[confirm_key] = False  # force a fresh review before another execution
+
+
+def execute_approved_plan(account, actions, option_targets, close_occ, open_targets, current_option_positions):
+    from brokers.alpaca_options import AlpacaOptionsBroker
+    from trade_from_csv import execute_actions
+
+    api_key = os.environ.get("ALPACA_API_KEY")
+    secret_key = os.environ.get("ALPACA_SECRET_KEY")
+    equity_broker = AlpacaEquityBroker(api_key, secret_key, paper=True)
+
+    options_broker = None
+    existing_reserved_capital = 0.0
+    if option_targets:
+        try:
+            options_broker = AlpacaOptionsBroker(api_key, secret_key, paper=True)
+            existing_reserved_capital = float(options_broker.buying_power_reserved())
+        except Exception as e:
+            st.error(f"Couldn't set up the options broker ({e}) - option orders will be skipped this run.")
+            options_broker = None
+
+    buf = io.StringIO()
+    with st.spinner("Submitting orders and waiting for fill confirmation..."):
+        with redirect_stdout(buf):
+            execute_actions(
+                equity_broker, actions,
+                options_broker=options_broker, close_option_occ=close_occ, open_option_targets=open_targets,
+                current_option_positions=current_option_positions or [],
+                account_buying_power=float(account.buying_power) if options_broker is not None else None,
+                existing_reserved_capital=existing_reserved_capital,
+            )
+    output = buf.getvalue()
+    st.code(output or "(nothing was submitted)")
+
+    log_path = LOG_DIR / f"dashboard_execution_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.json"
+    log_path.write_text(json.dumps({
+        "run_at": datetime.now(timezone.utc).isoformat(),
+        "source": "dashboard.py approve-and-execute",
+        "equity_actions": actions,
+        "option_close": close_occ,
+        "option_open": [t.occ_symbol for t in open_targets],
+        "output": output,
+    }, indent=2, default=str))
+    st.caption(f"Logged to {log_path.relative_to(BASE_DIR)}")
+
+    load_account_and_positions.clear()
+    st.success("Execution finished. Reload or switch tabs to see updated positions.")
 
 
 def render_latest_decision():
@@ -371,15 +524,73 @@ def render_alerts():
     )
 
 
+def render_automation():
+    from heartbeat import HEARTBEAT_PATH, check_heartbeats
+
+    st.subheader("Heartbeats")
+    st.caption("Recorded by weekly_sizing / daily_monitor / report each time they complete successfully.")
+    data = {}
+    if HEARTBEAT_PATH.exists():
+        try:
+            data = json.loads(HEARTBEAT_PATH.read_text())
+        except (json.JSONDecodeError, OSError):
+            data = {}
+    stale = check_heartbeats(HEARTBEAT_JOBS, max_age_days=HEARTBEAT_MAX_AGE_DAYS)
+
+    cols = st.columns(len(HEARTBEAT_JOBS))
+    for col, job in zip(cols, HEARTBEAT_JOBS):
+        last = data.get(job)
+        if last is None:
+            col.metric(job, "never run")
+            continue
+        try:
+            dt = datetime.fromisoformat(last)
+        except ValueError:
+            col.metric(job, "unparseable timestamp")
+            continue
+        age_days = (datetime.now(timezone.utc) - dt).days
+        label = f"{age_days}d ago" + (" — STALE" if job in stale else "")
+        col.metric(job, dt.strftime("%Y-%m-%d %H:%M UTC"), label, delta_color="inverse" if job in stale else "off")
+
+    st.divider()
+    st.subheader("GitHub Actions")
+    slug, runs_by_workflow = load_github_actions_status()
+    if slug is None:
+        st.info("No GitHub remote found for this repo - can't look up workflow status.")
+    elif runs_by_workflow is None:
+        st.info(f"Couldn't reach the GitHub Actions API for {slug}.")
+    elif not runs_by_workflow:
+        st.info(f"{slug}: no workflow runs yet.")
+    else:
+        st.caption(f"github.com/{slug}")
+        rows = [
+            {
+                "workflow": name,
+                "status": run.get("status"),
+                "conclusion": run.get("conclusion") or "-",
+                "last_run": run.get("created_at"),
+                "url": run.get("html_url"),
+            }
+            for name, run in runs_by_workflow.items()
+        ]
+        st.dataframe(
+            pd.DataFrame(rows), use_container_width=True, hide_index=True,
+            column_config={"url": st.column_config.LinkColumn("link", display_text="open")},
+        )
+
+
 # ---------------------------------------------------------------------------
 # Layout
 # ---------------------------------------------------------------------------
 
 st.title("Options Selector")
-st.caption("Read-only view - this dashboard cannot submit an order (no OptionsBroker/EquityBroker write methods are imported).")
+st.caption(
+    "Read-only, except the Approve & Execute button on the Positions tab, which submits real "
+    "(paper) orders once you've checked the review box."
+)
 
-tab_overview, tab_positions, tab_decision, tab_performance, tab_ledger, tab_alerts = st.tabs(
-    ["Overview", "Positions", "Latest Decision", "Performance", "Ledger Trends", "Alerts"]
+tab_overview, tab_positions, tab_decision, tab_performance, tab_ledger, tab_alerts, tab_automation = st.tabs(
+    ["Overview", "Positions", "Latest Decision", "Performance", "Ledger Trends", "Alerts", "Automation"]
 )
 
 with tab_overview:
@@ -394,3 +605,5 @@ with tab_ledger:
     render_ledger_trends()
 with tab_alerts:
     render_alerts()
+with tab_automation:
+    render_automation()
