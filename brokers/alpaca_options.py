@@ -123,10 +123,28 @@ class AlpacaOptionsBroker(OptionsBroker):
     def submit_option(self, contract: Contract, qty: int, side: OrderSide) -> Order:
         self._check_options_approval()
         alpaca_side = _AlpacaOrderSide.BUY if side == OrderSide.BUY else _AlpacaOrderSide.SELL
-        # Limit at the observed mid, not a market order - option spreads can
-        # be wide even after the S3.5 <=15% relative-spread filter, and a
-        # market order has no protection against a stale/thin book.
-        limit_price = round(contract.mid, 2)
+        # Limit priced to genuinely cross the spread, not a market order.
+        # This went through two real bugs found live before landing here:
+        #   1. Pricing at the mid is a resting price - a SELL at mid sits
+        #      *above* the bid and a BUY sits *below* the ask, so neither
+        #      crosses at all. Sat unfilled 45+ seconds on a liquid,
+        #      actively-traded contract.
+        #   2. Pricing exactly *at* the touch (BUY at ask, SELL at bid)
+        #      still isn't reliably marketable in Alpaca's paper options
+        #      simulation - two orders sat as OrderStatus.ACCEPTED for over
+        #      a minute each, priced exactly at the then-current bid, with
+        #      the quote never moving. Only a price that genuinely crosses
+        #      *through* the touch (confirmed live: ask+$0.02 filled in
+        #      ~3s) reliably triggers a fill.
+        # So: cross by max(1 cent, 10% of the spread) beyond the touch.
+        # Still a bounded limit order, not an open-ended market order - on
+        # top of the S3.5 <=15% relative-spread filter already applied
+        # upstream, worst case here is spread + a small fraction more, not
+        # unlimited slippage.
+        spread = max(0.0, contract.ask - contract.bid)
+        cross = max(0.01, round(0.10 * spread, 2))
+        limit_price = round((contract.ask + cross) if side == OrderSide.BUY else (contract.bid - cross), 2)
+        limit_price = max(0.01, limit_price)  # options can't be priced <= 0
         order = self._trading.submit_order(
             LimitOrderRequest(
                 symbol=contract.occ_symbol,

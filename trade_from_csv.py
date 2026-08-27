@@ -196,10 +196,24 @@ def plan_option_actions(option_targets: dict, current_option_positions: list):
     return close_occ, open_targets
 
 
-def close_option_positions(options_broker: OptionsBroker, occ_symbols, current_option_positions):
+def close_option_positions(options_broker: OptionsBroker, occ_symbols, current_option_positions,
+                            equity_broker: EquityBroker = None, poll_timeout: int = FILL_POLL_TIMEOUT):
     """Step 1 of S8.2 - closes option positions no longer wanted, via an
-    offsetting order (buy-to-close a short, sell-to-close a long)."""
+    offsetting order (buy-to-close a short, sell-to-close a long).
+
+    Polls for fill confirmation when equity_broker is given (order_status
+    is asset-class-agnostic on Alpaca, so the same lookup that confirms
+    equity fills works for option order IDs too). This isn't decoration:
+    live testing found option orders can sit unfilled indefinitely - a
+    resting limit at the mid doesn't cross the spread (fixed in
+    brokers/alpaca_options.py), and a genuinely illiquid contract may not
+    fill at any price if there's no real trade flow to match against. A
+    stuck close order left silent would mean a position you think is gone
+    is actually still open. Returns the list of occ_symbols that didn't
+    confirm filled, for the caller to alert on.
+    """
     positions_by_occ = {p.occ_symbol: p for p in current_option_positions}
+    unfilled = []
     for occ in occ_symbols:
         pos = positions_by_occ.get(occ)
         if pos is None:
@@ -209,21 +223,47 @@ def close_option_positions(options_broker: OptionsBroker, occ_symbols, current_o
             contract = options_broker.latest_contract_quote(occ)
             o = options_broker.submit_option(contract, abs(pos.qty), side)
             print(f"  {occ:<24} CLOSE  {abs(pos.qty)} contract(s) submitted, order id {o.id}")
+            if equity_broker is not None:
+                result = wait_for_fill(equity_broker, o.id, timeout=poll_timeout)
+                if result is None or not result.status.is_ok:
+                    status = result.status.value if result else "unknown"
+                    print(f"  {occ:<24} CLOSE  ALERT: not confirmed filled within {poll_timeout}s "
+                          f"(status: {status}) - position may still be open, check manually")
+                    unfilled.append(occ)
+                else:
+                    print(f"  {occ:<24} CLOSE  confirmed filled")
         except Exception as e:
             print(f"  {occ:<24} CLOSE  FAILED: {e}")
+            unfilled.append(occ)
+    return unfilled
 
 
-def open_option_positions(options_broker: OptionsBroker, targets):
+def open_option_positions(options_broker: OptionsBroker, targets, equity_broker: EquityBroker = None,
+                           poll_timeout: int = FILL_POLL_TIMEOUT):
     """Step 5 of S8.2 - submitted last, after equity buys, since cash-
-    secured puts need confirmed buying power (S8.2)."""
+    secured puts need confirmed buying power (S8.2). See
+    close_option_positions' docstring on why fill confirmation matters
+    here. Returns the list of occ_symbols that didn't confirm filled."""
+    unfilled = []
     for t in targets:
         side = OrderSide.SELL if t.instrument == "short_put" else OrderSide.BUY
         try:
             contract = options_broker.latest_contract_quote(t.occ_symbol)
             o = options_broker.submit_option(contract, t.contracts, side)
             print(f"  {t.occ_symbol:<24} OPEN   {t.instrument} x{t.contracts} submitted, order id {o.id}")
+            if equity_broker is not None:
+                result = wait_for_fill(equity_broker, o.id, timeout=poll_timeout)
+                if result is None or not result.status.is_ok:
+                    status = result.status.value if result else "unknown"
+                    print(f"  {t.occ_symbol:<24} OPEN   ALERT: not confirmed filled within {poll_timeout}s "
+                          f"(status: {status}) - check manually, it may still fill later or need cancelling")
+                    unfilled.append(t.occ_symbol)
+                else:
+                    print(f"  {t.occ_symbol:<24} OPEN   confirmed filled")
         except Exception as e:
             print(f"  {t.occ_symbol:<24} OPEN   FAILED: {e}")
+            unfilled.append(t.occ_symbol)
+    return unfilled
 
 
 def get_basis_value(account, basis):
@@ -313,7 +353,8 @@ def execute_actions(
     # per S8.2.
     if options_broker is not None and close_option_occ:
         print("Closing option positions no longer in target:")
-        close_option_positions(options_broker, close_option_occ, current_option_positions)
+        close_option_positions(options_broker, close_option_occ, current_option_positions,
+                                equity_broker=equity_broker, poll_timeout=poll_timeout)
         print()
 
     # Step 2: equity sells/closes.
@@ -398,7 +439,7 @@ def execute_actions(
     # secured puts need confirmed buying power (S8.2).
     if options_broker is not None and open_option_targets:
         print("\nOpening new option positions:")
-        open_option_positions(options_broker, open_option_targets)
+        open_option_positions(options_broker, open_option_targets, equity_broker=equity_broker, poll_timeout=poll_timeout)
 
 
 def main():

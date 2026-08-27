@@ -153,3 +153,79 @@ def test_load_option_targets_ignores_share_rows_and_missing_columns(tmp_path):
     plain_csv = tmp_path / "plain.csv"
     plain_csv.write_text("ticker,position_size\nAAA,0.05\n")
     assert load_option_targets(str(plain_csv)) == {}
+
+
+# --- fill confirmation: a real bug found live (mid-priced orders can sit
+# unfilled indefinitely - see brokers/alpaca_options.py's submit_option
+# docstring). close_option_positions/open_option_positions must not
+# silently assume a submitted order actually filled. ---------------------
+
+from trade_from_csv import close_option_positions, open_option_positions
+
+
+class NeverFillsEquityBroker(EquityBroker):
+    """order_status always comes back non-terminal, simulating a resting
+    order that never crosses the spread."""
+    def positions(self):
+        return []
+
+    def account(self):
+        raise NotImplementedError
+
+    def is_tradable(self, symbol):
+        return True
+
+    def submit_notional(self, symbol, notional, side):
+        raise NotImplementedError
+
+    def close_position(self, symbol):
+        raise NotImplementedError
+
+    def order_status(self, order_id):
+        return Order(id=order_id, symbol="X", status=FillStatus.NEW)
+
+    def pending_corporate_action(self, symbol, lookahead_days=90):
+        return None
+
+
+def test_open_option_positions_flags_unfilled_orders(capsys):
+    options = RecordingOptionsBroker()
+    target = OptionTarget(ticker="AAA", instrument="short_put", occ_symbol="AAA240315P00050000",
+                           strike=50.0, expiry="2024-03-15", contracts=1)
+
+    unfilled = open_option_positions(options, [target], equity_broker=NeverFillsEquityBroker(), poll_timeout=1)
+
+    assert unfilled == ["AAA240315P00050000"]
+    assert "ALERT" in capsys.readouterr().out
+
+
+def test_open_option_positions_confirms_filled_orders():
+    options = RecordingOptionsBroker()
+    target = OptionTarget(ticker="AAA", instrument="short_put", occ_symbol="AAA240315P00050000",
+                           strike=50.0, expiry="2024-03-15", contracts=1)
+
+    unfilled = open_option_positions(options, [target], equity_broker=RecordingEquityBroker(), poll_timeout=1)
+
+    assert unfilled == []
+
+
+def test_close_option_positions_flags_unfilled_orders(capsys):
+    options = RecordingOptionsBroker()
+    positions = [OptionPosition(occ_symbol="AAA240315P00050000", underlying="AAA", contract_type="put",
+                                 strike=50.0, expiry=date(2024, 3, 15), qty=-1, market_value=-100)]
+
+    unfilled = close_option_positions(options, ["AAA240315P00050000"], positions,
+                                       equity_broker=NeverFillsEquityBroker(), poll_timeout=1)
+
+    assert unfilled == ["AAA240315P00050000"]
+    assert "ALERT" in capsys.readouterr().out
+
+
+def test_option_functions_skip_polling_without_an_equity_broker():
+    """Backward-compatible default: equity_broker=None means "don't poll",
+    not "crash" - callers that don't care about confirmation still work."""
+    options = RecordingOptionsBroker()
+    target = OptionTarget(ticker="AAA", instrument="short_put", occ_symbol="AAA240315P00050000",
+                           strike=50.0, expiry="2024-03-15", contracts=1)
+    unfilled = open_option_positions(options, [target])
+    assert unfilled == []
