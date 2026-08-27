@@ -29,7 +29,6 @@ rows.
 
 from __future__ import annotations
 
-import csv
 import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -189,20 +188,35 @@ def build_per_name_rows(run_log: dict) -> list:
     return rows
 
 
-def _append_rows(rows: list, path: Path, columns: list):
+def _upsert_rows(rows: list, path: Path, columns: list, key_columns: list):
+    """Appends rows, but first drops any existing row(s) whose key already
+    matches one of the new rows - a same-day re-run (e.g. retesting with
+    --force, as happens constantly during development) replaces that day's
+    entry instead of accumulating duplicates every time the script runs.
+    Mirrors archive_run()'s "today's history/ folder gets overwritten, not
+    duplicated" behavior - a real gap found live: three duplicate rows for
+    the same date had already piled up in validation_ledger.csv from
+    ordinary same-day test runs before this existed."""
+    import pandas as pd
+
     path.parent.mkdir(parents=True, exist_ok=True)
-    write_header = not path.exists()
-    with open(path, "a", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=columns)
-        if write_header:
-            writer.writeheader()
-        for row in rows:
-            writer.writerow(row)
+    new_df = pd.DataFrame(rows, columns=columns)
+
+    if path.exists():
+        existing = pd.read_csv(path)
+        new_keys = {tuple(r[k] for k in key_columns) for r in rows}
+        mask = existing[key_columns].apply(lambda row: tuple(row) in new_keys, axis=1)
+        combined = pd.concat([existing[~mask], new_df], ignore_index=True)
+    else:
+        combined = new_df
+
+    combined = combined.sort_values(key_columns).reset_index(drop=True)
+    combined.to_csv(path, index=False)
 
 
 def append_ledger_row(row: dict, path: Path):
-    _append_rows([row], path, LEDGER_COLUMNS)
+    _upsert_rows([row], path, LEDGER_COLUMNS, key_columns=["run_date"])
 
 
 def append_per_name_rows(rows: list, path: Path):
-    _append_rows(rows, path, PER_NAME_COLUMNS)
+    _upsert_rows(rows, path, PER_NAME_COLUMNS, key_columns=["run_date", "ticker"])

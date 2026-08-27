@@ -128,3 +128,49 @@ def test_build_per_name_rows_uses_instrument_and_weight():
     assert by_ticker["AAA"]["weight"] == 0.5
     assert by_ticker["BBB"]["instrument"] == "long_call"
     assert by_ticker["AAA"]["forward_return_1w"] is None
+
+
+# --- upsert behavior: a real bug found live - repeated same-day runs
+# (e.g. retesting with --force) were accumulating duplicate rows instead
+# of replacing that day's entry, the way archive_run() already does for
+# history/<date>/. ---------------------------------------------------------
+
+from validation_ledger import append_ledger_row, append_per_name_rows
+
+
+def test_append_ledger_row_replaces_same_day_row_not_duplicates(tmp_path):
+    path = tmp_path / "validation_ledger.csv"
+    row1 = build_ledger_row(_fake_run_log(portfolio_value=100_000.0), history_dir=tmp_path, regime_state_path=tmp_path / "r.json")
+    row2 = build_ledger_row(_fake_run_log(portfolio_value=999_999.0), history_dir=tmp_path, regime_state_path=tmp_path / "r.json")
+
+    append_ledger_row(row1, path)
+    append_ledger_row(row2, path)
+
+    result = pd.read_csv(path)
+    assert len(result) == 1
+    assert result.loc[0, "portfolio_value"] == 999_999.0  # the later run wins, not both accumulated
+
+
+def test_append_ledger_row_keeps_different_dates_separate(tmp_path):
+    path = tmp_path / "validation_ledger.csv"
+    row1 = build_ledger_row(_fake_run_log(run_at="2026-08-20T14:00:00+00:00"), history_dir=tmp_path, regime_state_path=tmp_path / "r.json")
+    row2 = build_ledger_row(_fake_run_log(run_at="2026-08-27T14:00:00+00:00"), history_dir=tmp_path, regime_state_path=tmp_path / "r.json")
+
+    append_ledger_row(row1, path)
+    append_ledger_row(row2, path)
+
+    result = pd.read_csv(path)
+    assert sorted(result["run_date"]) == ["2026-08-20", "2026-08-27"]
+
+
+def test_append_per_name_rows_replaces_same_day_same_ticker(tmp_path):
+    path = tmp_path / "per_name.csv"
+    rows1 = build_per_name_rows(_fake_run_log(weight_final={"AAA": 0.5}))
+    rows2 = build_per_name_rows(_fake_run_log(weight_final={"AAA": 0.9}))  # e.g. a totally different CSV run same day
+
+    append_per_name_rows(rows1, path)
+    append_per_name_rows(rows2, path)
+
+    result = pd.read_csv(path)
+    assert len(result) == 1
+    assert result.loc[0, "weight"] == 0.9
