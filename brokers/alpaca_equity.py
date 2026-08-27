@@ -13,7 +13,7 @@ from datetime import date, timedelta
 from typing import Optional
 
 from alpaca.trading.client import TradingClient
-from alpaca.trading.enums import OrderStatus as _AlpacaOrderStatus
+from alpaca.trading.enums import AssetClass, OrderStatus as _AlpacaOrderStatus
 from alpaca.trading.requests import GetCorporateAnnouncementsRequest, MarketOrderRequest
 from alpaca.trading.enums import CorporateActionType, OrderSide as _AlpacaOrderSide, TimeInForce
 from alpaca.common.exceptions import APIError
@@ -49,12 +49,21 @@ class AlpacaEquityBroker(EquityBroker):
         self._client = TradingClient(api_key, secret_key, paper=paper)
 
     def positions(self) -> list[Position]:
+        # get_all_positions() returns every asset class (equity AND
+        # options) in one list - a real bug, found while building
+        # current_positions.py: an open option position leaked into the
+        # equity list here, which feeds trade_from_csv.py's "held but not
+        # in this week's target -> close_position()" logic. Left
+        # unfiltered, that could submit an equity close against an option
+        # symbol. AlpacaOptionsBroker.option_positions() already filters
+        # the other way for the same reason.
         return [
             Position(
                 symbol=p.symbol, qty=float(p.qty), market_value=float(p.market_value),
                 unrealized_plpc=float(p.unrealized_plpc) if p.unrealized_plpc is not None else None,
             )
             for p in self._client.get_all_positions()
+            if p.asset_class == AssetClass.US_EQUITY
         ]
 
     def account(self) -> Account:
