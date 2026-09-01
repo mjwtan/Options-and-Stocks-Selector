@@ -97,6 +97,16 @@ def test_find_archived_weeks_ignores_non_date_directories(tmp_path):
     assert find_archived_weeks(tmp_path) == []
 
 
+def test_find_archived_weeks_missing_directory_returns_empty_not_crash(tmp_path):
+    """Real bug found live: history/ is gitignored, so a fresh CI checkout
+    that hasn't had a weekly run commit it yet doesn't have the directory
+    at all - iterdir() on a nonexistent path raises FileNotFoundError
+    instead of the "nothing archived yet" case this should be."""
+    missing = tmp_path / "history"
+    assert not missing.exists()
+    assert find_archived_weeks(missing) == []
+
+
 def test_load_held_positions_filters_zero_and_option_only_rows(tmp_path):
     csv_path = tmp_path / "target_positions.csv"
     csv_path.write_text(

@@ -51,6 +51,8 @@ def find_archived_weeks(history_dir: Path):
     input_<origname>.csv and the run log <name>.json, so whatever .csv is
     left is the sizing output, whatever its original filename was."""
     weeks = []
+    if not history_dir.exists():
+        return weeks  # nothing archived yet - e.g. a fresh checkout before any weekly run has committed a week
     for day_dir in sorted(history_dir.iterdir()):
         if not day_dir.is_dir():
             continue

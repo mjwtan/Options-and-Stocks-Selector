@@ -130,6 +130,26 @@ def test_build_per_name_rows_uses_instrument_and_weight():
     assert by_ticker["AAA"]["forward_return_1w"] is None
 
 
+def test_build_per_name_rows_carries_iv_ratio_and_reason():
+    """Added after a live investigation into "why zero options for 3 weeks
+    straight" needed to hand-parse archived CSVs for iv_ratio per name -
+    it should be queryable straight from the permanent per-name ledger."""
+    rows = build_per_name_rows(_fake_run_log())
+    by_ticker = {r["ticker"]: r for r in rows}
+    assert by_ticker["AAA"]["reason"] == "rank 1 <= 5: shares only (S5.3)"
+    assert by_ticker["AAA"]["iv_ratio"] is None  # not present in this fixture's decision dict
+    assert by_ticker["BBB"]["reason"] == "iv_ratio=0.7 vs thresholds [0.85,1.25]"
+
+
+def test_build_per_name_rows_uses_skip_reason_for_skipped_ticker():
+    run_log = _fake_run_log(weight_final={"AAA": 0.5, "DDD": 0.0})
+    rows = build_per_name_rows(run_log)
+    by_ticker = {r["ticker"]: r for r in rows}
+    assert by_ticker["DDD"]["instrument"] == "skipped (liquidity)"
+    assert by_ticker["DDD"]["reason"] == "adv20 too low"
+    assert by_ticker["DDD"]["iv_ratio"] is None
+
+
 # --- upsert behavior: a real bug found live - repeated same-day runs
 # (e.g. retesting with --force) were accumulating duplicate rows instead
 # of replacing that day's entry, the way archive_run() already does for

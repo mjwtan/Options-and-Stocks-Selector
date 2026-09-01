@@ -48,7 +48,10 @@ LEDGER_COLUMNS = [
     "mc_elapsed_ms", "mc_paths", "cvar_ann",
 ]
 
-PER_NAME_COLUMNS = ["run_date", "ticker", "rank", "weight", "instrument", "forward_return_1w", "forward_return_4w"]
+PER_NAME_COLUMNS = [
+    "run_date", "ticker", "rank", "weight", "instrument", "iv_ratio", "reason",
+    "forward_return_1w", "forward_return_4w",
+]
 
 EST_COST_BPS_PER_UNIT_TURNOVER = 10.0  # a placeholder estimate (spec names the column "est_"), not a measured cost
 
@@ -169,19 +172,39 @@ def build_ledger_row(run_log: dict, history_dir: Path, regime_state_path: Path) 
 
 
 def build_per_name_rows(run_log: dict) -> list:
+    """iv_ratio/reason let a later analysis answer "is the IV-vs-realized-vol
+    edge threshold ever actually crossed" without re-parsing every week's
+    archived target_positions.csv by hand - see the "why did I get zero
+    options for N weeks" investigation this was added for."""
     weight_final = run_log["weight_final"]
     instrument_decisions = run_log.get("instrument_decisions", {})
+    skip_decisions = run_log.get("skip_decisions", {})
     today = datetime.fromisoformat(run_log["run_at"]).date().isoformat()
 
     rows = []
     for ticker, weight in weight_final.items():
         decision = instrument_decisions.get(ticker)
+        skip = skip_decisions.get(ticker)
+        if decision:
+            instrument = decision["instrument"]
+            iv_ratio = decision.get("iv_ratio")
+            reason = decision.get("reason")
+        elif skip:
+            instrument = f"skipped ({skip['gate']})"
+            iv_ratio = None
+            reason = skip.get("reason")
+        else:
+            instrument = "skipped" if weight == 0 else "shares"
+            iv_ratio = None
+            reason = None
         rows.append({
             "run_date": today,
             "ticker": ticker,
             "rank": None,  # filled by the caller, which has df on hand
             "weight": weight,
-            "instrument": decision["instrument"] if decision else ("skipped" if weight == 0 else "shares"),
+            "instrument": instrument,
+            "iv_ratio": iv_ratio,
+            "reason": reason,
             "forward_return_1w": None,
             "forward_return_4w": None,
         })
