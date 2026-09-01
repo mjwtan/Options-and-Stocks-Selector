@@ -1,9 +1,22 @@
 # Systematic Equity & Options Portfolio — System Specification
 
-**Version:** 1.0
-**Execution venue:** Alpaca (paper first)
-**Cadence:** Weekly full run, daily monitoring
-**Language:** Python 3.11+
+**Version:** 2.0 — as-built
+**Execution venue:** Alpaca (paper)
+**Cadence:** Weekly full run, daily monitoring, fully automated end to end
+**Language:** Python 3.11+ (CI) / 3.13 (local dev)
+
+This is the current, maintained specification — it describes what is actually
+implemented, not just what was originally designed. Where the build departs
+from the original plan, that's stated plainly, with the reason. The original
+design documents this was built from live in `mdinstructions/` for history;
+`weekly-csv-generation-routine.md` there is the one still actively read (the
+weekly screen's automation instructions).
+
+A one-line status for anyone skimming: **the entire pipeline — screen
+generation, position sizing, execution planning, daily monitoring, and
+performance tracking — runs on a schedule with no manual step required to
+keep it running.** The one deliberate exception is submitting real trades:
+that always requires a human to review and click "execute," by design (§8.4).
 
 ---
 
@@ -20,8 +33,8 @@ Three layers. Each consumes the previous layer's output and does not reach back.
 The separation matters. Layer 1 is a judgment we do not attempt to reproduce. Layers 2 and 3 are calculations we own end to end, computed from our own market data.
 
 ```
-CSV (20 ranked names)
-  → validate
+CSV (20 ranked names)                    ← automated weekly (§17)
+  → validate                             ← position_sizing.py
   → fetch bars + option chains
   → compute realised vol, covariance
   → raw weights from rank / vol
@@ -29,8 +42,8 @@ CSV (20 ranked names)
   → per-name instrument choice (QuantLib IV vs realised)
   → Monte Carlo portfolio simulation → CVaR → k_risk
   → regime scalar → k_regime
-  → final positions
-  → orders (sells, confirm, then buys)
+  → final positions → target_positions.csv, validation ledger (§16)
+  → [human review — dashboard or CLI] → orders (sells, confirm, then buys)
 ```
 
 ---
@@ -39,23 +52,19 @@ CSV (20 ranked names)
 
 ### 1.1 Design requirement — swappable, independent adapters
 
-Equity and options are handled by **separate adapters behind separate interfaces**. The system must run equity-only with `OPTIONS_ENABLED=False` and no options provider configured at all — not merely with the options code path skipped, but with no options dependency imported or credentialed.
+Equity and options are handled by **separate adapters behind separate interfaces**. The system runs equity-only with `OPTIONS_ENABLED=False` and no options provider imported or credentialed at all.
 
 ```
 brokers/
   base.py               # EquityBroker, OptionsBroker, MarketData protocols
   alpaca_equity.py
   alpaca_options.py
-  ibkr_equity.py        # if needed
-  tradier_options.py    # if needed
+  providers.py           # resolve_providers(cfg) factory
 data/
-  base.py
   alpaca_data.py
-  polygon_data.py
-  tradier_data.py
 ```
 
-Three protocols, deliberately separate:
+Three protocols, deliberately separate — `brokers/base.py`'s actual signatures, slightly extended from the original design where a real gap required it (`is_tradable`, `pending_corporate_action`, `latest_contract_quote` were added for reasons noted inline in that file):
 
 ```python
 class MarketData(Protocol):
@@ -65,58 +74,40 @@ class MarketData(Protocol):
 class EquityBroker(Protocol):
     def positions(self) -> list[Position]: ...
     def account(self) -> Account: ...
+    def is_tradable(self, symbol) -> bool: ...
     def submit_notional(self, symbol, notional, side) -> Order: ...
     def close_position(self, symbol) -> Order: ...
     def order_status(self, order_id) -> Status: ...
+    def pending_corporate_action(self, symbol, lookahead_days=90) -> str | None: ...
 
 class OptionsBroker(Protocol):
     def chain(self, symbol, expiry_range) -> list[Contract]: ...
     def submit_option(self, contract, qty, side) -> Order: ...
     def option_positions(self) -> list[OptionPosition]: ...
     def buying_power_reserved(self) -> Decimal: ...
+    def latest_contract_quote(self, occ_symbol) -> Contract: ...
 ```
 
-Nothing in the sizing, risk, or regime layers may import a provider module directly. They receive an adapter instance. This is what makes the equity-only mode genuinely independent and what allows a provider swap without touching strategy code.
-
-**Equity broker, options broker, and market data may be three different vendors.** This is the common configuration in practice — see §1.4.
+Nothing in the sizing, risk, or regime layers imports a provider module directly — everything goes through an adapter instance, resolved by `brokers/providers.py`. **Only Alpaca is implemented today**, for all three roles. The IBKR/Tradier/Polygon rows below remain the honest cost/tradeoff comparison from the original design, kept because the abstraction means adding one is a new adapter file, not a rewrite — but none of them have been built.
 
 ### 1.2 Equity execution
 
 | Provider | Cost | Notes |
 |---|---|---|
-| **Alpaca** | Free | Commission-free US equities, fractional via notional orders, free paper trading, clean REST. Default choice |
-| **IBKR** | Paid | Required only for non-US listings. UK residents get IBKR Pro (no Lite tier): ~£3/trade European, ~$0.35 min US. No fractional on most non-US venues. Heavier integration — TWS/Gateway process or session auth |
-| **Tradier** | $10/mo + $0.35/contract | Brokerage Plus tier. Strongest when options are the focus — see §1.3 |
-
-Fractional shares matter here. Rank-weighted sizing produces awkward target values; without fractional support every position rounds to whole shares and small positions distort. Alpaca and IBKR (US only) support it; most others do not.
+| **Alpaca** | Free | Commission-free US equities, fractional via notional orders, free paper trading, clean REST. **Implemented, in use.** |
+| **IBKR** | Paid | Required only for non-US listings. Not implemented. |
+| **Tradier** | $10/mo + $0.35/contract | Not implemented. |
 
 ### 1.3 Options execution and chain data
 
-This is where paid providers earn their cost. Alpaca's options offering is materially thinner than its equities offering.
-
 | Provider | Cost | Assessment |
 |---|---|---|
-| **Alpaca Options** | Free | Adequate for basic chains. Greeks and IV not consistently provided; historical options data limited. Viable to start, likely to constrain later |
-| **Tradier** | $10/mo + $0.35/contract | Purpose-built for options. Full chains with bid/ask/greeks/IV, good documentation, sandbox environment. Best value for this use case |
-| **Polygon.io Options** | $29–199/mo | Data only, no execution. Excellent chain quality, historical IV, tick data. Pair with a separate execution broker |
-| **IBKR** | Paid | Comprehensive chains and global coverage. Heaviest integration burden |
-| **ORATS** | $99+/mo | Specialist options analytics — clean IV surfaces, historical vol data. Overkill unless the IV signal becomes the core of the strategy |
-
-**Recommended starting configuration:** Alpaca for equity execution and equity bars (free), Tradier for options chains and options execution ($10/mo). Total cost is trivial and each vendor is used where it is strongest.
-
-**If the IV signal proves to be where the edge is,** upgrade options data to Polygon or ORATS for historical IV — which you need to establish whether an `iv_ratio` of 1.3 is genuinely rich for that name or normal for it. This is the single most likely paid upgrade to be worth making.
+| **Alpaca Options** | Free | **Implemented, in use.** Greeks/IV are carried through as a cross-check only (§1.4.3) — the actual pricing decision is computed independently via QuantLib (§5.2), not trusted from the provider. |
+| **Tradier / Polygon / ORATS** | Paid | Not implemented. Remains the likely upgrade path if the IV signal (§5.1) proves to be where the edge is — establishing whether an `iv_ratio` needs historical context to interpret needs IV history this system doesn't have today. |
 
 ### 1.4 Verification before building
 
-Test each provider against real calls before committing to it:
-
-1. **Equity bars** — pull 300 daily bars for 20 tickers in one request. Confirm adjusted closes, and check the adjustment convention (split-only vs. split-and-dividend). A mismatch between your volatility source and covariance source is subtle and wrong.
-2. **Option chains** — pull a full chain for a mid-cap name. Confirm bid, ask, open interest, and at least two expiries between 21 and 90 days, with multiple strikes surviving the §3.5 quality filters.
-3. **Greeks and IV** — check whether the provider supplies them. If so, use them as a cross-check against QuantLib's own calculation; if the two diverge materially, investigate before trusting either.
-4. **Paper/sandbox** — confirm a full order lifecycle works end to end in the sandbox for both equity and options.
-5. **Approval level** — confirm the account permits cash-secured puts and long calls. These are typically the lowest options tiers, but confirm rather than assume.
-
-**If step 2 fails on all available providers, the options layer is not viable.** Run equity-only. That is a legitimate outcome, and the adapter design means it costs nothing to fall back.
+Done ad hoc via live testing against the real paper account during the build, rather than as a formal pre-flight harness — every provider-facing bug in this system (option order pricing not crossing the spread, equity positions leaking option holdings, a trailing newline in a CI secret breaking every HTTP header) was found this way, not by a written verification script. Worth building §1.4 as literally specified if a second provider is ever added, so the same class of bug doesn't need rediscovering live twice.
 
 ---
 
@@ -124,25 +115,28 @@ Test each provider against real calls before committing to it:
 
 ### 2.1 Schema
 
-Delivered weekly. One row per stock.
+Delivered weekly, automatically (§17). One row per stock. The actual schema is wider than originally specified — it carries the qualitative fields (`sector`, `why_included`, `valuation`, `bear_case`) the LLM screen produces, plus the numeric fields `position_sizing.py` computes on top:
 
-| Column | Type | Definition |
-|---|---|---|
-| `ticker` | string | Must match broker symbology exactly |
-| `ranking` | int 1–20 | Conviction order, 1 = highest. Strict, no ties or gaps |
-| `regime` | int 0/1 | Market-wide flag. Logged, **not used** — see §7.1 |
-| `risk_index` | float | Higher = riskier |
-| `volatility_index` | float | Higher = more volatile |
-| `sentiment_index` | float | Higher = more positive |
-| `expected_horizon_days` | int | How long the thesis is expected to take to play out |
+| Column | Type | Source | Definition |
+|---|---|---|---|
+| `ticker` | string | screen | Must match broker symbology exactly |
+| `sector`, `why_included`, `valuation`, `bear_case` | string | screen | Qualitative rationale, logged and shown in the dashboard, not used numerically |
+| `ranking` | int 1–20 | screen | Conviction order, 1 = highest. Strict, no ties or gaps |
+| `regime` | int 0/1 | screen | Market-wide flag. Logged, **not used** — see §7.1 |
+| `risk_index` | float | screen | Higher = riskier |
+| `volatility_index` | float | screen | Higher = more volatile |
+| `sentiment_index` | float | screen | Higher = more positive |
+| `expected_horizon_days` | int | screen | Drives option expiry selection (§5.4) |
+| `data_quality` | float 0–1 | screen | Fraction of that row's numeric cells retrieved live vs. estimated |
+| `entry_price`, `sigma` | float | screen | Reference price and the screen's own vol estimate — logged for comparison against this system's own computed `sigma_i` (§3.2), not used directly |
 
-`expected_horizon_days` is new and load-bearing: it drives option expiry selection (§5.4). Without it, expiry is chosen by convention rather than by the actual view.
+`position_sizing.py` then appends its own computed columns (weights at each stage, instrument decision, strike/expiry/delta/contracts/premium) to the same file for output — see §11.
 
 ### 2.2 Validation gate
 
 Refuse to trade and alert on any of:
 
-- Row count ≠ 20 (warn and proceed between 10 and 19; abort below 10)
+- Row count outside 10–20 (abort below 10; warn and proceed 10–19; exactly 20 expected)
 - Duplicate tickers
 - Any ticker failing an Alpaca asset lookup or flagged non-tradable
 - `ranking` not forming a strict 1..N sequence
@@ -151,23 +145,22 @@ Refuse to trade and alert on any of:
 - `expected_horizon_days` missing, or outside 5–365
 - Missing bars for any ticker, or a gap longer than the exchange calendar allows
 
-**Staleness:** the file carries no timestamp. Guard with both a content hash compared against the previous run, and a file mtime within 3 days. Neither alone suffices — an unchanged pick list produces an identical hash legitimately, and a touched-but-stale file passes mtime. Alert rather than proceed when either fails.
+**Staleness — two independent guards, as originally specified, but the age check is implemented differently than planned.** The file carries no timestamp, so it's checked two ways:
 
-A malformed file must never reach order submission. Log the reason, exit non-zero.
+1. **Content hash** against the previous successfully-processed run (`state/last_input_hash.json`). Catches "nothing was regenerated" regardless of any timestamp.
+2. **Age**, compared against a 3-day limit. The original design read the file's filesystem mtime — this turned out to be a real, silent bug once the pipeline moved to GitHub Actions: every scheduled run does a fresh `git checkout`, which stamps every file's mtime to "now" regardless of its actual content age, so the mtime check could structurally never fire in CI. Fixed to read the file's last **git commit date** instead (`git log -1 --format=%cI -- <path>`), which survives a checkout intact, falling back to mtime only for local/non-git usage. `weekly.yml`'s checkout uses `fetch-depth: 0` so this has the history it needs to be correct.
+
+A malformed file never reaches order submission. Log the reason, exit non-zero.
 
 ---
 
 ## 3. Layer 2a — Market data
 
-All computed from our own sources. Nothing here comes from the CSV.
+All computed from our own sources. Nothing here comes from the CSV, other than each ticker.
 
 ### 3.1 Equity bars
 
-~300 daily bars per ticker plus the benchmark, from Alpaca. One bulk call.
-
-```
-r_t = ln(P_t / P_{t-1})
-```
+~300 daily bars per ticker plus the benchmark, from Alpaca, one bulk call, with bounded retry (`fetch_and_validate_bars`) for the transient "bar not posted yet" case found live on thinly-traded names.
 
 ### 3.2 Realised volatility (EWMA, 21-day half-life)
 
@@ -180,7 +173,7 @@ for t in remaining:
 sigma_i = clip(sqrt(var * 252), 0.12, 0.80)
 ```
 
-The floor is load-bearing — without it an unusually quiet stock receives an enormous inverse-vol weight from what is probably a temporary lull.
+As specified. The floor prevents an unusually quiet stock from receiving an enormous inverse-vol weight from a temporary lull.
 
 ### 3.3 Covariance
 
@@ -188,32 +181,32 @@ The floor is load-bearing — without it an unusually quiet stock receives an en
 Sigma = LedoitWolf().fit(returns_250d).covariance_ * 252
 ```
 
-Shrinkage is required, not optional: with 20 assets and 250 observations a raw sample covariance is unstable. QuantLib has no shrinkage estimator, so sklearn does this.
+As specified — QuantLib has no shrinkage estimator, so sklearn does this; QuantLib's `pseudoSqrt` is still used downstream in the Monte Carlo path generator (§6.2) for the correlated-normal construction.
 
 ### 3.4 Calendar
 
-Use QuantLib for all date arithmetic:
+`trading_calendar.py` (renamed from the originally-supplied `calendar.py` — a repo-root `calendar.py` shadows the stdlib module). One real bug fixed from the supplied version: `ql.Actual252()` does not exist in the installed QuantLib binding — `ql.Business252(calendar)` is the correct day counter and is used instead.
 
 ```python
 cal = ql.UnitedStates(ql.UnitedStates.NYSE)
-cal.advance(today, ql.Period(-200, ql.Days))      # exact 200-session lookback
-cal.businessDaysBetween(d1, d2)                   # expected bar count
+cal.advance(today, ql.Period(-200, ql.Days))
+cal.businessDaysBetween(d1, d2)
 ```
 
-Confine QuantLib date usage to one module with `datetime` conversion helpers at the boundary. `ql.Date` does not interoperate with pandas timestamps.
-
-**Pre-run guard:** abort if today is not a trading day, or if the previous session's bars have not arrived.
+**Pre-run guard:** `assert_fresh()` aborts if today is not a trading day, or if the latest bar is older than the previous session — deliberately `>=` rather than an exact match, since a run any time after the open on a normal day legitimately has a fresher bar than "yesterday," and an exact-match check rejected perfectly good data.
 
 ### 3.5 Option chains
 
-Per ticker: strikes, expiries, bid, ask, open interest, volume.
+Per ticker: strikes, expiries, bid, ask, open interest, volume, via `options/chain.py`.
 
-Quality filters — discard any contract failing these, and skip the options layer for a name if too few contracts survive:
+Quality filters — discard any contract failing these, skip the options layer for a name if fewer than 4 contracts survive:
 
 - Bid > 0 and ask > 0
 - Relative spread `(ask - bid) / mid` ≤ 0.15
 - Open interest ≥ 100
 - Expiry between 21 and 90 days out
+
+In practice, the spread filter does most of the eliminating — a real chain often lists 300+ contracts across a DTE window, with only a handful of near-the-money strikes genuinely liquid. Seeing 1–2 survivors out of 300+ fetched is normal market structure, not a bug in the filter.
 
 ---
 
@@ -221,43 +214,26 @@ Quality filters — discard any contract failing these, and skip the options lay
 
 ### 4.1 Raw weights
 
-The ranking is treated as a high-conviction signal, so weighting is linear in rank.
-
 ```
 raw_i = (21 - ranking_i) / sigma_i
 w_i   = raw_i / sum(raw)
 ```
 
-Rank 1 contributes 20 units, rank 20 contributes 1, before volatility adjustment.
+As specified. Rank 1 contributes 20 units, rank 20 contributes 1, before volatility adjustment.
 
 ### 4.2 Constraints
 
-Apply in order, renormalise after each pass, iterate until stable or 5 passes:
-
 ```
 w_i <= 0.12                             # position cap
-w_i >= 0.015  else drop the name        # floor; below this, costs dominate
+w_i >= 0.015  else drop the name        # floor
 w_i * V <= 0.005 * adv20_i              # liquidity: exitable in one day
 ```
 
-Names dropped by the floor are expected. Under linear rank weighting the portfolio will typically hold **12–15 names, not 20**. This is intentional — concentration is how conviction is expressed.
+Applied in order, renormalised after each pass, iterated to stability. As specified — the portfolio typically holds 12–16 names, not 20, and that's intentional concentration, not a bug.
 
-Log which constraint bound for each name.
+### 4.3 Optional index modifiers — not built
 
-### 4.3 Optional index modifiers — default OFF
-
-`risk_index` and `sentiment_index` may be layered on. Implement behind a config flag, disabled initially.
-
-Normalise to within-week percentiles across the 20 rows, which neutralises scale drift:
-
-```
-r_mult_i = 1 - 0.20 * percentile(risk_index_i)      # 1.00 → 0.80
-s_mult_i = 0.92 + 0.16 * percentile(sentiment_i)    # 0.92 → 1.08
-```
-
-Before enabling, check the correlation between the risk percentile and our own `sigma_i` percentile across several weeks. Above 0.8 they measure the same thing and applying both double-penalises volatile names — leave `risk_index` off permanently in that case.
-
-Sentiment is the noisiest input and likely already inside `ranking`. Treat enabling it as an experiment.
+`risk_index` and `sentiment_index` tilts remain unbuilt, correctly deferred per the original design's own instruction to only enable them "with data supporting them" — that data (several weeks of correlation between the risk percentile and this system's own `sigma_i` percentile) doesn't exist yet. `USE_RISK_INDEX`/`USE_SENTIMENT_INDEX` exist as CLI flags, default off, with no behavior wired behind them yet.
 
 ---
 
@@ -265,22 +241,9 @@ Sentiment is the noisiest input and likely already inside `ranking`. Treat enabl
 
 ### 5.0 The decision
 
-For each of the 20 names, the system chooses one of four outcomes:
-
-| Outcome | When |
-|---|---|
-| **Buy shares** | Default. No options edge, or options unavailable |
-| **Sell cash-secured put** | Options expensive relative to our volatility estimate |
-| **Buy call** | Options cheap relative to our volatility estimate |
-| **Skip entirely** | The name fails a hard gate — see §5.8 |
-
-The skip outcome is not a fallback; it is a real decision. A name in the CSV is a suggestion, not an obligation. Weight freed by a skip is redistributed across the remaining names by renormalising §4.2.
-
-Log the outcome and its reason for all 20 names every run, including the skips.
+For each of the 20 names: buy shares, sell a cash-secured put, buy a call, or skip entirely (§5.8). Fully implemented in `options/decision.py`. Skip is a real decision, not a fallback — weight it frees is redistributed by renormalising §4.2. Every outcome and reason is logged for all 20 names, every run, including skips — visible in the dashboard's "Latest Decision" tab.
 
 ### 5.1 The signal
-
-Compare **implied volatility from market quotes** against **our realised volatility estimate** (§3.2).
 
 ```
 iv_ratio = iv_atm / sigma_realised
@@ -288,143 +251,53 @@ iv_ratio = iv_atm / sigma_realised
 
 | `iv_ratio` | Interpretation | Action |
 |---|---|---|
-| > `IV_RICH_THRESHOLD` (1.25) | Options expensive | Sell cash-secured put to enter |
-| < `IV_CHEAP_THRESHOLD` (0.85) | Options cheap | Buy call for leveraged exposure |
+| > `IV_RICH_THRESHOLD` (1.25) | Options expensive | Sell cash-secured put |
+| < `IV_CHEAP_THRESHOLD` (0.85) | Options cheap | Buy call |
 | Between | No edge | Buy shares |
 
-This is not a claim of arbitrage. The ratio compares the market's forward-looking view against our backward-looking estimate, and the two legitimately differ — particularly around known events. It identifies where the options market prices risk differently from recent history, which is a weaker but real signal.
-
-**Caveat worth knowing:** without historical IV for the name, an `iv_ratio` of 1.3 cannot be distinguished from that name's normal level. Some tickers persistently trade rich. This is the strongest argument for a paid data provider with IV history (§1.3) once the basic system works.
+As specified. **Observed in practice across the first three real weeks of data:** every single `iv_ratio` computed landed between 0.88 and 1.24 — inside the neutral band every time, several close to but never crossing either threshold. Per this system's own stated philosophy, this is *not* being treated as evidence the thresholds are miscalibrated after three data points — `iv_ratio` and `reason` are now logged permanently per name per week (§16) specifically so this can be judged properly once 12+ weeks exist, rather than tuned prematurely.
 
 ### 5.2 Pricing engine — Black-Scholes
 
-**Use Black-Scholes as the default engine.** This is a deliberate simplification with a real justification and a real limitation, both stated here.
+Black-Scholes is the default engine for everything, including short-put strike selection. The required comparison harness (`benchmarks/bench_options_pricing.py`) was run across the specified 21–90 DTE × 0.20–0.30 delta × 0–4% dividend yield grid: **maximum observed gap between Black-Scholes and a full binomial (American, CRR) price was 1.35% of premium** — under the ~2% threshold that would have required switching puts to binomial. Result recorded in `benchmarks/fixtures/options_pricing_comparison.json`. The binomial engine (`price_binomial`) is implemented and used only by that comparison harness — not in the live decision path.
 
-```python
-payoff   = ql.PlainVanillaPayoff(ql.Option.Call, strike)
-exercise = ql.EuropeanExercise(expiry_date)
-option   = ql.VanillaOption(payoff, exercise)
+Failures (`impliedVolatility` throwing on stale/crossed quotes) are caught, logged, and the contract excluded — never a substituted default.
 
-process = ql.BlackScholesMertonProcess(
-    ql.QuoteHandle(ql.SimpleQuote(spot)),
-    dividend_ts, risk_free_ts, vol_ts
-)
-option.setPricingEngine(ql.AnalyticEuropeanEngine(process))
-
-iv = option.impliedVolatility(market_mid, process,
-                              accuracy=1e-4, maxEvaluations=100)
-```
-
-**Why it is acceptable:**
-
-- For a non-dividend-paying underlying, an American call has no early-exercise value — Black-Scholes is exact, not an approximation.
-- The pricing is closed-form rather than iterative, which is roughly two orders of magnitude faster than a binomial tree. This matters enormously in §6.3, where options are revalued across simulated paths.
-- Greeks are analytic rather than computed by finite difference, so they are both faster and more numerically stable.
-
-**Where it is wrong:**
-
-- American **puts** always carry early-exercise value. Black-Scholes underprices them, and the error grows with moneyness, dividend yield, and time to expiry. Since short puts are one of the three expressions, this is a live limitation, not a hypothetical one.
-- Dividend-paying underlyings introduce early-exercise value for calls too, concentrated around ex-dividend dates.
-
-**Required mitigation.** Implement a binomial engine behind `PRICING_ENGINE=binomial` and run a comparison harness across the realistic parameter range — 21–90 DTE, 0.20–0.30 delta, dividend yields 0–4%. Record the maximum observed pricing difference.
-
-- If the gap stays under roughly 2% of premium, Black-Scholes is fine as the production engine.
-- If it exceeds that on short puts, use binomial for **strike selection and entry pricing** on puts specifically, and Black-Scholes everywhere else including the Monte Carlo grid.
-
-This is a measurable question with a measurable answer. Do not settle it by argument — run the comparison, record the numbers, and put them in the repo.
-
-**Inputs required:** spot, dividend yield, risk-free rate (current T-bill yield, refreshed weekly), market mid price.
-
-**Handle failures explicitly.** `impliedVolatility` throws when no solution exists in range — common with stale or crossed quotes. Catch, log the contract, exclude it. Never substitute a default value.
-
-**ATM definition:** the strike closest to spot among surviving contracts at the chosen expiry. If the nearest is more than 3% from spot, interpolate IV between the two bracketing strikes rather than using a distant one.
+**ATM definition:** nearest strike to spot; if more than 3% away, interpolate IV between the two bracketing strikes.
 
 ### 5.3 Ranking-based instrument restriction
 
-Not every name should get an options expression. The ranking decides:
-
 | Rank | Permitted expressions |
 |---|---|
-| 1–5 | **Shares only.** Highest conviction — do not cap upside or add complexity |
-| 6–15 | Shares, long calls, or short puts per the `iv_ratio` signal |
-| 16–20 | Shares or short puts only. Never long calls |
+| 1–5 | Shares only |
+| 6–15 | Shares, long calls, or short puts per `iv_ratio` |
+| 16–20 | Shares or short puts only, never long calls |
 
-The rank 1–5 restriction is deliberate. If the ranking has edge, that edge most likely lives in the top names making large moves. Capping or complicating those positions works against the signal generating returns.
+As specified, implemented exactly.
 
 ### 5.4 Expiry selection
-
-Driven by `expected_horizon_days` from the CSV:
 
 ```
 target_dte = clip(expected_horizon_days, 21, 90)
 ```
 
-Choose the listed expiry closest to `target_dte`. If nothing lists within ±14 days of target, fall back to shares for that name and log it.
-
-Never select an expiry inside 21 days. Gamma rises sharply near expiry and the position requires intraday management the system does not provide.
+Nearest listed expiry within ±14 days; else fall back to shares and log it. Never selects inside 21 DTE.
 
 ### 5.5 Strike selection
 
-**By delta, not by percentage from spot.** A fixed percentage means different things on a volatile name than a stable one; delta normalises for that.
-
-```
-Short puts:  target delta ≈ -0.30   (roughly 30% assignment probability)
-Long calls:  target delta ≈  0.60   (enough directional exposure to matter)
-```
-
-Compute delta via QuantLib Greeks, select the listed strike whose delta is nearest target. If no strike falls within ±0.10 of target, fall back to shares.
+By delta (`TARGET_PUT_DELTA = -0.30`, `TARGET_CALL_DELTA = 0.60`), nearest listed strike within ±0.10; else fall back to shares.
 
 ### 5.6 Sizing the options position
 
-Options are not interchangeable with shares at equal notional. Convert on a **delta-equivalent** basis so the portfolio's directional exposure matches the equity weights computed in §4.
-
-```
-target_notional_i = w_i * V
-
-# Long call
-contracts = round(target_notional_i / (delta * spot * 100))
-
-# Short put — capital committed is strike, not spot
-contracts = round(target_notional_i / (strike * 100))
-```
-
-**Cash-secured puts tie up `strike × 100 × contracts` in cash.** This must be reserved and excluded from buying power for other positions. Failing to account for it is the most likely way this system overcommits capital.
-
-Round down. If `contracts < 1`, fall back to shares.
+Delta-equivalent notional matching, as specified. Cash-secured put capital (`strike × 100 × contracts`) is tracked as an in-run reservation ledger (`options/sizing.py`, `AlpacaOptionsBroker.buying_power_reserved()`) — this is a same-run overcommit guard, not a persistent broker-side reservation, since Alpaca has no such primitive; stated explicitly rather than implied as stronger than it is.
 
 ### 5.7 Fallback to shares
 
-Use shares instead of options whenever any of these hold. These are not failures — shares remain a perfectly good expression.
-
-- Chain data missing or fails the §3.5 quality filters
-- IV solve failed for the ATM contract
-- No expiry within ±14 days of target
-- No strike within ±0.10 delta of target
-- `contracts` would round to 0
-- **Earnings fall before expiry** — IV inflates into a print and collapses after, which the `iv_ratio` signal misreads as richness. Fetch earnings dates and exclude affected names from short puts specifically
-- `OPTIONS_ENABLED=False`
-
-Log every fallback with its reason. A persistently high fallback rate means the options layer is not earning its place and should be reconsidered.
+As specified — chain-quality failure, IV solve failure, no expiry/strike within tolerance, `contracts < 1`, earnings before expiry (short puts specifically), or `OPTIONS_ENABLED=False`. Every fallback logged with its reason; `options_fallback_count` is now a permanent per-week ledger column (§16).
 
 ### 5.8 Skip the name entirely
 
-Distinct from §5.7. These are hard gates — do not buy the name in any form, whatever its ranking says.
-
-| Gate | Threshold | Rationale |
-|---|---|---|
-| Liquidity | `adv20 < MIN_ADV` (default $5m) | Cannot exit without moving the price |
-| Weight floor | `w_i < POSITION_FLOOR` after constraints | Costs dominate the position |
-| Volatility ceiling | `sigma_i > MAX_SIGMA` (default 1.00) | Beyond the risk model's useful range |
-| Data quality | Bars missing, stale, or gapped beyond calendar expectation | Every downstream number is unreliable |
-| Tradability | Broker flags the asset non-tradable, halted, or hard-to-borrow | Cannot execute |
-| Pending corporate action | Announced merger, acquisition, or delisting | Price no longer reflects fundamentals; the thesis is void |
-| Earnings inside 2 trading days | — | Overnight gap risk the weekly cadence cannot manage |
-
-**Redistribution.** Weight freed by skipped names is redistributed by renormalising across survivors, then re-running the §4.2 constraint loop. Do not simply hold the freed weight in cash — that silently reduces exposure without the risk layer accounting for it.
-
-**Guard rail.** If more than `MAX_SKIP_FRACTION` (default 0.40, i.e. 8 of 20) are skipped, abort the run and alert. That many gate failures indicates a data problem or a broken upstream file, not twenty genuinely unsuitable stocks.
-
-Log skips with their gate and the value that triggered it. Skip rate by gate is a useful diagnostic — a rising liquidity-skip rate, for instance, means the upstream screen is drifting toward smaller names than the system can handle.
+As specified — liquidity, weight floor, volatility ceiling, data quality, tradability, pending corporate action, earnings within 2 trading days. `MAX_SKIP_FRACTION` (0.40) aborts the run if breached. Corporate-action and earnings checks are best-effort against whatever the provider exposes; an undetermined result is logged as `unknown, not gated`, never silently treated as safe.
 
 ---
 
@@ -432,124 +305,40 @@ Log skips with their gate and the value that triggered it. Skip rate by gate is 
 
 ### 6.1 Why simulation is required here
 
-With options in the book, `sigma_p = sqrt(wᵀΣw)` is no longer valid. Option payoffs are non-linear: a long call is convex, a short put has a fat left tail, and variance is the wrong summary statistic for either. Simulation is the correct tool, not an embellishment.
-
-Keep the analytic path implemented behind `--risk-engine analytic` as a reference for validation and as a fallback for equity-only runs.
+As specified: option payoffs are non-linear, so `sigma_p = sqrt(wᵀΣw)` is invalid once options are in the book. The analytic path remains implemented behind `--risk-engine analytic`, used as the automatic fallback on any Monte Carlo failure (`risk/engine.py` wraps the simulation in a try/except specifically for this) and as the continuous cross-check logged every run (§11).
 
 ### 6.2 Path generation
 
-```python
-ql_cov = ql.Matrix(n, n)                    # populate from Sigma_daily
-L = ql.pseudoSqrt(ql_cov, ql.SalvagingAlgorithm.Spectral)
-```
+`ql.pseudoSqrt` with spectral salvaging, both Sobol and Mersenne Twister generators implemented (`--mc-generator`), antithetic variates on by default, `mu = 0` by default. As specified.
 
-`SalvagingAlgorithm.Spectral` repairs non-positive-semi-definite matrices by flooring negative eigenvalues. This will occur occasionally with real data; without salvaging the run crashes. Log whenever salvaging alters the matrix materially — it signals a data problem.
+### 6.3 Revaluing options along paths — known limitation, not built
 
-Use Sobol low-discrepancy sequences — faster convergence means fewer paths for equivalent accuracy, which matters directly for the performance target.
+**This is the one substantive gap against the original design.** §6.3 called for repricing each option along every simulated path via a precomputed fair-value grid, so the simulated CVaR reflects real option convexity (a long call) and tail risk (a short put). As actually built, `risk/montecarlo.py` aggregates simulated **asset** returns linearly (`asset_cum @ weights`) — it never reprices an option at all. The simulation is correctly built and tested for what it computes (it passes its own required analytic-agreement gate, §12), but that gate is specifically an equity-only, linear check — it doesn't exercise the missing piece.
 
-```python
-rsg = ql.SobolRsg(n_assets * n_steps, MC_SEED)
-```
-
-Also implement Mersenne Twister behind a flag as a convergence cross-check. If the two disagree beyond Monte Carlo error, the implementation is wrong.
-
-Multivariate GBM per step:
-
-```
-z   = L @ independent_normals
-r_t = (mu - 0.5 * sigma**2) * dt + sigma * sqrt(dt) * z
-```
-
-**Set `mu = 0` by default.** Expected-return estimates are unreliable at this horizon and inject a directional view into what should be a risk measurement. Configurable, but document that non-zero drift means the CVaR figure is no longer a pure risk number.
-
-### 6.3 Revaluing options along paths
-
-The expensive part. For each path, at horizon, each option must be repriced at the simulated underlying level.
-
-**Do not reprice with a full pricing engine per path per position.** Even with closed-form Black-Scholes, 50,000 paths × 15 positions is 750,000 evaluations per run.
-
-Instead, precompute a **price grid** per option — fair value across a range of underlying prices (default 61 points spanning ±30% of spot) — then interpolate along paths. Build the grid once, interpolate 50,000 times.
-
-Black-Scholes (§5.2) makes this substantially cheaper than a tree-based engine would: grid construction is 61 closed-form evaluations rather than 61 binomial trees. This is a large part of why the analytic engine is the default.
-
-Grid resolution is a config parameter. Validate that interpolation error is immaterial relative to Monte Carlo standard error — cubic spline interpolation on 61 points is normally more than sufficient.
+Why it wasn't built: not a technical blocker — a real but bounded feature (a price grid per option, evaluated at the horizon date with correctly-reduced time-to-expiry, interpolated across simulated terminal prices, then combined with the linear share P&L into one portfolio return). Time went to the options *decision* layer and to fixing real execution bugs found live instead. Practical impact has been low so far because, per §5.1's observation, the options layer has landed on shares in effectively every real week logged to date — but this is a real gap that will matter more once options positions are actually held regularly. Fixing it is a self-contained, independently-verifiable engineering task (construct a known option position, confirm the fixed engine reproduces the correct convex/tail-heavy P&L shape) — it does **not** require waiting for the validation ledger's real-market data, which answers a different question (whether the ranking signal itself works), not this one (whether the risk engine's math is complete).
 
 ### 6.4 Risk measures
 
-```python
-losses  = -portfolio_returns
-var_95  = np.percentile(losses, 95)
-cvar_95 = losses[losses >= var_95].mean()
-
-cvar_ann = cvar_95 * sqrt(252 / MC_HORIZON_DAYS)
-```
-
-CVaR (expected shortfall) is preferred over VaR: it is coherent as a risk measure (VaR fails subadditivity) and it responds to tail shape rather than a single quantile — which is the point when the book contains short puts.
+CVaR (expected shortfall) preferred over VaR, as specified. `risk/measures.py` implements both.
 
 ### 6.5 Sizing from CVaR
 
-```python
+```
 k_risk  = min(1.0, CVAR_TARGET / cvar_ann)
 w_final = w_constrained * k_risk * k_regime
 ```
 
-`CVAR_TARGET` default **0.25**. Cap at 1.0 — never lever.
-
-**Calibrate before trusting it.** Run both engines over several months of historical weights and compare `k_vol` against `k_risk` on an equity-only book. If `k_risk` is systematically lower, the target is too tight and the portfolio will sit in cash. Tune so the two produce similar average exposure in normal conditions — then the difference appears only under stress, which is the intent.
+**`RISK_ENGINE` defaults to `montecarlo`, not `analytic` as originally specified** — an explicit, deliberate choice made ahead of the calibration step §13's build order recommends, before any live weight history existed to calibrate against. `sigma_p_analytic`/`sigma_p_simulated` are logged every run specifically so the gap stays visible while real weights accumulate — use it to judge whether `CVAR_TARGET` needs retuning, or whether reverting to `--risk-engine analytic` would have been the better call. **Not yet calibrated** — this remains open until enough weeks of real ledger data exist (§16).
 
 ---
 
 ## 7. Regime scalar
 
-### 7.1 Compute it ourselves
+### 7.1–7.4
 
-**Do not use the CSV's `regime` column as a trading input.** We hold the benchmark bars, we control the as-of date, and the upstream definition has already drifted once (per-stock in one version, market-wide in another).
+Computed independently from the CSV's own `regime` column (logged and cross-checked, never acted on), continuous scalar with the specified slope/floor, both dampers (3-day confirmation, 0.15/week rate limit), state persisted in `state/regime_state.json` with cold-start handling — all implemented as specified.
 
-Read it, log it, compare, alert on disagreement. Never act on it.
-
-### 7.2 Continuous scalar
-
-```
-sma200   = mean(benchmark_closes[-200:])
-distance = (close - sma200) / sma200
-
-k_raw    = 0.5 + REGIME_SLOPE * distance         # slope = 5.0
-k_target = clip(k_raw, REGIME_FLOOR, 1.0)        # floor = 0.30
-```
-
-| distance | k_regime |
-|---|---|
-| +10% | 1.00 |
-| +4% | 0.70 |
-| 0% | 0.50 |
-| −4% and below | 0.30 |
-
-The floor is deliberate: never going fully to cash means a V-shaped recovery does not leave the book on the sidelines — the 200-day filter's worst-documented failure, since the largest up-days cluster near bottoms while the signal still reads risk-off.
-
-### 7.3 Dampers — both required
-
-**Confirmation.** `k_regime` may not cross 0.5 in either direction until the benchmark has closed on the new side for 3 consecutive trading days. This requires computing `distance` **daily**, not only on rebalance days.
-
-**Rate limit.** `k_regime` may change by at most `REGIME_MAX_STEP` (0.15) per rebalance. A crash moves 1.00 → 0.85 → 0.70 → 0.55 → 0.40 → 0.30 over five weeks rather than in one step.
-
-### 7.4 State
-
-`k_regime`, `crossing_day_count`, and the previous `distance` sign persist between runs. Store as JSON or SQLite alongside run logs.
-
-**Cold start:** set `prev_k_regime = k_target`, `crossing_day_count = REGIME_CONFIRM_DAYS`. Log clearly.
-
-**Missed runs:** state older than 10 days is treated as a cold start rather than applying one 0.15 step against stale state.
-
-### 7.5 Interaction with the screen
-
-The upstream selection screen already filters on price > 200-day SMA per stock, so in a genuine downtrend most candidates fail independently and the list shrinks or arrives empty on its own.
-
-A short or empty CSV in a downtrend is **expected**, not a fault. It must still fail the §2.2 validation gate rather than being read as "sell everything," but the alert should distinguish:
-
-- Empty file + `distance < 0` → expected, informational
-- Empty file + `distance > 0` → upstream fault, investigate
-
-Do not double-count. The scalar cuts *total* exposure; it must not also penalise individual stocks for the market regime.
+One change: the benchmark defaults to **`SPY`, not `^GSPC`**. `^GSPC` is a raw index ticker Alpaca's data feed cannot serve at all — every run paid for a guaranteed-fail call and a confusing log line, discovered live once daily automation made the noise visible daily instead of just once a week. The total-return-vs-price-index distinction that originally motivated `^GSPC` doesn't affect this signal in practice: it's a distance from SPY's own trailing SMA, both terms drawn from the same series, so the dividend-drag effect that distinction is about cancels out.
 
 ---
 
@@ -558,194 +347,203 @@ Do not double-count. The scalar cuts *total* exposure; it must not also penalise
 ### 8.1 Order generation
 
 ```
-target_value_i  = w_final_i * V
-current_value_i = from broker positions
-delta_i         = target_value_i - current_value_i
-
 trade if abs(delta_i) > max(25, 0.20 * target_value_i)
 ```
 
-**Exit hysteresis:** do not sell a held name until it falls out of the **top 25** of the ranking, not the top 20. A name oscillating around rank 20 would otherwise generate a round trip every week. Names absent from the file entirely are exited in full.
+As specified. **Exit hysteresis (hold until rank 25, not rank 20) is not implemented** — structurally can't be, today: the weekly CSV only ever carries ranks 1–20, so there's no rank 21–25 data to check a dropped name against. Would require the upstream screen to report a top-25 list. Names absent from the CSV entirely are exited in full via `close_position`.
 
-### 8.2 Ordering — mandatory
+### 8.2 Ordering — mandatory, implemented exactly
 
-1. Close options positions requiring exit
-2. Submit equity sells
-3. **Poll until fills confirm** (timeout → abort remaining, alert)
-4. Submit equity buys
-5. Submit new options positions last
-
-Options go last because cash-secured puts require confirmed buying power. Buying before sells settle causes rejections and can self-cross.
-
-Full equity exits use `close_position`, not a computed notional, to avoid fractional dust. Use `notional` orders for equity to get fractional precision; options are integer contracts only.
-
-Skip any equity order below ~£20 notional.
+Close options → equity sells → poll for confirmed fills → equity buys → open new options, in `trade_from_csv.py`'s `execute_actions()`. Two real bugs found live and fixed here: option orders originally priced at the mid never crossed the spread and sat unfilled; pricing exactly at the touch still wasn't reliably marketable in Alpaca's paper simulation — fixed to cross through by `max($0.01, 10% of spread)`.
 
 ### 8.3 Options-specific handling
 
-**Assignment monitoring.** Deep in-the-money short calls are exercised early to capture dividends. Check daily for short options with delta > 0.90 and an ex-dividend date before expiry; alert for manual review.
+Assignment monitoring (delta > 0.90 with an upcoming ex-dividend date), 21-DTE rolling flag, expiry-week flag — all implemented in `daily_monitor.py`, alert-only by explicit design (see §9.2).
 
-**Rolling.** At 21 DTE, either close or roll to the next expiry. Do not hold into the final three weeks — gamma risk rises and the position needs management the daily job cannot provide.
+### 8.4 Trade execution is never automatic — by design
 
-**Expiry week.** Flag all positions expiring within 5 trading days in the daily monitoring report.
+`weekly.yml` computes `target_positions.csv` and stops. Nothing in the scheduled automation calls `trade_from_csv.py`. Submitting real (paper) orders requires a human to either run `trade_from_csv.py` directly or use the dashboard's "Approve & Execute" flow (§18), which requires an explicit review checkbox that resets after every use. This is the one deliberate, permanent human-in-the-loop checkpoint in an otherwise fully automated pipeline.
 
 ---
 
-## 9. Cadence
+## 9. Cadence — fully automated
 
-### 9.1 Weekly — full run
+### 9.1 Weekly
 
-Pre-market Monday. Ingest CSV, recompute everything, rebalance equity, evaluate options.
+Two scheduled jobs, ~75 minutes apart, both self-gating to the week's genuine first NYSE trading day via `scheduling/is_weekly_run_day.py` (holiday-aware — a holiday Monday shifts the run to Tuesday automatically, with no manual action):
+
+1. **Weekly screen generation** (§17) — a Claude Code Routine, 11:00 UTC, produces `top20.csv`/`top20.md`.
+2. **Weekly Sizing** (`weekly.yml`, GitHub Actions) — 12:15 UTC, runs `position_sizing.py`, writes `target_positions.csv`, archives the week, appends to the validation ledger (§16).
 
 ### 9.2 Daily — monitoring only
 
-Pre-market every trading day. **No trading except on triggers.**
+`daily_monitor.py`, via `daily.yml`, Tue–Fri at 12:45 UTC (deliberately staggered 30 minutes from Weekly Sizing's slot after both were found firing at the identical minute on overlapping days). Alert-only, never trades — recomputes `distance`/`k_regime` daily (required for §7.3's confirmation counter), checks delta drift, assignment risk, 21-DTE/expiry-week, and stop-loss.
 
-- Recompute `distance` and update `crossing_day_count` (required for §7.3 confirmation)
-- Check option deltas for material drift
-- Check assignment risk (§8.3)
-- Flag positions at 21 DTE or under
-- Check stop-loss breaches
+Exits non-zero when it finds a warning — a deliberate choice to reuse GitHub's built-in failed-run email as a free alert channel rather than building a separate notification system. The cost of that choice is that a real alert and a genuine crash look identical in the Actions UI; mitigated by emitting a `::warning::`/`::notice::` GitHub annotation per alert, so the actual alert text renders as a distinct banner in the run summary rather than requiring a click into the raw log.
 
 ### 9.3 Event-driven
 
-Act outside the weekly cycle only for: option at 21 DTE, stop-loss breach, assignment risk, or `k_regime` moving more than 0.10 in a day.
+Same triggers as specified (21 DTE, stop-loss, assignment risk, `k_regime` moving >0.10/day) — surfaced as alerts for human review, not auto-acted-on, consistent with §8.4's design.
 
-### 9.4 Why not daily rebalancing
+### 9.4 Reliability
 
-The thesis horizon is weeks; the signal does not refresh meaningfully day to day. Daily rebalancing on volatile names costs roughly 5–6% annually versus ~1% weekly, before options widen it further — single-name option spreads often run 5–10% of premium.
-
-**Measure this rather than assume it.** Track overlap between consecutive days' top-20 lists. If Monday and Tuesday share 18 of 20 names, daily trading generates trades from noise. If they share 12, the signal genuinely is fast-moving and the cadence is worth revisiting.
+`heartbeat.py` — every successful run records a timestamp; `scheduling/check_heartbeat.py` (run daily via `heartbeat.yml`) alerts if any of `weekly_sizing`/`daily_monitor`/`report` hasn't recorded one within 8 days. Full detail in §15.
 
 ---
 
 ## 10. Configuration
 
+Actual current defaults (CLI flag names differ slightly from the original spec's config-var names in places — noted where they do):
+
 | Name | Default | Section |
 |---|---|---|
-| `POSITION_CAP` | 0.12 | §4.2 |
-| `POSITION_FLOOR` | 0.015 | §4.2 |
-| `LIQUIDITY_FRAC` | 0.005 | §4.2 |
-| `NO_TRADE_BAND` | 0.20 | §8.1 |
-| `MIN_TRADE_ABS` | 25 | §8.1 |
-| `EXIT_RANK` | 25 | §8.1 |
-| `EWMA_HALFLIFE` | 21 | §3.2 |
-| `COV_WINDOW_DAYS` | 250 | §3.3 |
-| `USE_RISK_INDEX` | False | §4.3 |
-| `USE_SENTIMENT_INDEX` | False | §4.3 |
-| `OPTIONS_ENABLED` | False | §5 |
-| `EQUITY_BROKER` | `alpaca` | §1.1 |
-| `OPTIONS_BROKER` | `none` | §1.1 |
-| `MARKET_DATA` | `alpaca` | §1.1 |
-| `MIN_ADV` | 5_000_000 | §5.8 |
-| `MAX_SIGMA` | 1.00 | §5.8 |
-| `MAX_SKIP_FRACTION` | 0.40 | §5.8 |
-| `PRICING_ENGINE` | `black_scholes` | §5.2 |
-| `IV_RICH_THRESHOLD` | 1.25 | §5.1 |
-| `IV_CHEAP_THRESHOLD` | 0.85 | §5.1 |
-| `BINOMIAL_STEPS` | 200 | §5.2, comparison only |
-| `TARGET_PUT_DELTA` | -0.30 | §5.5 |
-| `TARGET_CALL_DELTA` | 0.60 | §5.5 |
-| `MIN_DTE` | 21 | §5.4 |
-| `MAX_DTE` | 90 | §5.4 |
-| `RISK_ENGINE` | `analytic` | §6 |
-| `CVAR_TARGET` | 0.25 | §6.5 |
-| `CVAR_ALPHA` | 0.95 | §6.4 |
-| `MC_N_PATHS` | 50000 | §6.2 |
-| `MC_HORIZON_DAYS` | 5 | §6.2 |
-| `MC_SEED` | 42 | §6.2 |
-| `MC_DRIFT` | 0.0 | §6.2 |
-| `MC_GRID_POINTS` | 61 | §6.3 |
-| `REGIME_SLOPE` | 5.0 | §7.2 |
-| `REGIME_FLOOR` | 0.30 | §7.2 |
-| `REGIME_CONFIRM_DAYS` | 3 | §7.3 |
-| `REGIME_MAX_STEP` | 0.15 | §7.3 |
+| `--position-cap` | 0.12 | §4.2 |
+| `--position-floor` | 0.015 | §4.2 |
+| (liquidity fraction) | 0.005 | §4.2, not a CLI flag |
+| `--sigma-target` | 0.15 | §6.5 (analytic engine only) |
+| `--use-risk-index` / `--use-sentiment-index` | off | §4.3, not yet wired |
+| `--options-enabled` | off | §5 |
+| `--equity-broker` / `--market-data` / `--options-broker` | `alpaca` | §1.1 |
+| `--min-adv` | 5,000,000 | §5.8 |
+| `--max-sigma` | 1.00 | §5.8 |
+| `--max-skip-fraction` | 0.40 | §5.8 |
+| `--iv-rich-threshold` / `--iv-cheap-threshold` | 1.25 / 0.85 | §5.1 |
+| `--target-put-delta` / `--target-call-delta` | -0.30 / 0.60 | §5.5 |
+| `--options-min-dte` / `--options-max-dte` | 21 / 90 | §5.4, §3.5 |
+| `--risk-engine` | **`montecarlo`** | §6.5 — differs from original spec's `analytic` default, see §6.5 |
+| `--cvar-target` | 0.25 | §6.5, not yet calibrated |
+| `--cvar-alpha` | 0.95 | §6.4 |
+| `--mc-paths` | 50,000 | §6.2 |
+| `--mc-horizon-days` | 5 | §6.2 |
+| `--mc-seed` | 42 | §6.2 |
+| `--mc-generator` | `sobol` | §6.2 |
+| `--mc-drift` | 0.0 | §6.2 |
+| `--regime-benchmark` | **`SPY`** | §7.2 — differs from original spec's `^GSPC`, see §7 |
+| `--regime-slope` | 5.0 | §7.2 |
+| `--regime-floor` | 0.30 | §7.2 |
+| `--regime-confirm-days` | 3 | §7.3 |
+| `--regime-max-step` | 0.15 | §7.3 |
+| `--force-regime` | none | §7, bypasses regime logic entirely, pins `k_regime` |
 
-All config-driven, none hardcoded.
-
-**CLI:** `--dry-run` (compute and print, submit nothing), `--risk-engine`, `--mc-paths`, `--mc-seed`, `--force-regime`, `--no-options`.
-
-`--dry-run` is the most important flag in the system. For anything that spends real money, being able to see what it would do before letting it do it is a safety feature, not a convenience.
+Also present: `--regime-dry-run` / `--risk-dry-run` (compute and log without applying to weights), `--force` (bypasses the §2.2 staleness guard — the everyday equivalent of the spec's `--dry-run` intent, since `position_sizing.py` never submits orders itself). The real order-submitting `--dry-run` flag lives on `trade_from_csv.py`, the only script capable of spending money.
 
 ---
 
 ## 11. Logging
 
-Per run, persisted:
-
-- CSV hash, file mtime, row count
-- Per name: `sigma_i`, rank, weight at each stage (raw → constrained → after `k_risk` → after `k_regime`)
-- Per name: instrument chosen, `iv_ratio`, and fallback reason if applicable
-- Options: strike, expiry, delta, contracts, premium, capital reserved
-- `cvar_ann`, `k_risk`, `var_95`
-- `sigma_p` from simulation **and** from the analytic formula, plus the difference
-- `distance`, `k_raw`, `k_target`, `k_regime`, previous `k_regime`, delta applied
-- CSV `regime` value and whether it agreed with ours
-- Which constraints bound
-- Intended vs. actual fills
-- Turnover as % of portfolio value; cash %
-- MC: `n_paths`, seed, generator, `elapsed_ms`
-
-The simulated-versus-analytic volatility comparison should be logged **every run**, not only in tests. It is a continuous correctness check costing nothing.
+Per run, persisted to `logs/run_<timestamp>.json` — CSV hash, per-name weight at every stage, instrument decision + `iv_ratio` + reason, option strike/expiry/delta/contracts/premium/capital reserved, `cvar_ann`/`k_risk`/`var_95`, `sigma_p` from both simulation and the analytic formula plus their difference (with a printed warning if they diverge >5% — treated as a bug, not a finding), regime state and the CSV's own `regime` value cross-checked, which constraints bound, turnover %, cash %, MC diagnostics. All as specified, plus the permanent weekly ledger described in §16, which the original design didn't have.
 
 ---
 
 ## 12. Tests
 
-**Determinism.** Same CSV, same bars, same seed → byte-identical weights.
+156 tests, `pytest -q`. Coverage against the original checklist:
 
-**Constraints.** Property test across randomised inputs: no weight exceeds the cap, falls below the floor, or breaches the liquidity limit. `sum(w_final) + cash == 1.0` within tolerance.
-
-**Validation.** Malformed CSVs (short, duplicated, repeated hash, non-uniform regime, bad rankings, null indices, missing horizon) all fail closed and submit zero orders.
-
-**Regime.** `k_regime` monotonic in `distance`; never above 1.0 or below the floor; never changes more than `REGIME_MAX_STEP` between runs. A single day's crossing does not move it across 0.5; three consecutive days does. State persists — a run loading prior state differs from a cold start with identical prices. Feed a CSV whose `regime` contradicts the price data and assert weights are unaffected.
-
-**Monte Carlo — the gate.** With `mu = 0` on an equity-only book, simulated portfolio volatility must match `sqrt(wᵀΣw)` within MC error. **Nothing proceeds until this passes** — it validates the correlation structure end to end.
-
-**MC convergence.** CVaR converges as paths increase (1k → 100k) with standard error scaling as `1/sqrt(n)`. Sobol and Mersenne Twister converge to the same value.
-
-**Normal-case CVaR.** For a normal distribution CVaR has a closed form; the simulated value must match it.
-
-**Option pricing.** QuantLib American prices bracket the European Black-Scholes value correctly (American call on a non-dividend payer equals European; American put exceeds European). IV round-trip: price at known vol, solve implied, recover the input within tolerance.
-
-**Grid interpolation.** Interpolated option values match full repricing within a stated tolerance, materially smaller than MC standard error.
-
-**Execution.** Sells never precede confirmed fills before buys. Options submit after equity. A target within the no-trade band produces no order. Hysteresis: a held name at rank 22 is retained; at rank 26 it is exited.
-
-**Capital reservation.** Cash-secured put capital is excluded from buying power for other positions. Assert the account cannot overcommit.
+- **Determinism, analytic-agreement gate, Sobol/Mersenne agreement, convergence (standard error ~1/√n), normal-case CVaR closed-form** — all present, `risk/tests/test_correctness.py`.
+- **Validation** — extensive malformed-CSV coverage.
+- **Regime** — monotonicity, bounds, confirmation-day gating, state persistence, cold start.
+- **Option pricing** — American-vs-European bracketing, IV round-trip.
+- **Execution ordering, no-trade band, capital reservation** — covered.
+- **Not covered:** true property-based/fuzz testing (the spec asked for randomized-input property tests; what exists is thorough example-based testing instead). Grid-interpolation tests don't apply, since §6.3's grid was never built.
 
 ---
 
-## 13. Build order
+## 13. Build order — actual deviations, stated plainly
 
-1. CSV ingestion and validation gate. No trading logic.
-2. Market data: bars, EWMA volatility, covariance, QuantLib calendar.
-3. Equity weights through §4.2 constraints.
-4. Regime scalar with state persistence.
-5. Order generation against Alpaca **paper**, equity only, `OPTIONS_ENABLED=False`, `RISK_ENGINE=analytic`.
-6. Logging.
-7. **Run equity-only paper trading for several weeks before adding anything.**
-8. Monte Carlo engine with Mersenne Twister. Validate against §12's analytic agreement gate.
-9. Sobol, antithetic variates, grid interpolation. Re-run convergence tests.
-10. Calibrate `CVAR_TARGET` per §6.5; switch `RISK_ENGINE=montecarlo`.
-11. Options layer: chain fetching, IV solving, instrument selection. **Log-only initially** — compute the recommendation, log it, do not act.
-12. Enable options execution on paper only after several weeks of log-only output looks sane.
-13. Optional index modifiers (§4.3), only with data supporting them.
-
-Steps 7, 11 and 12 are the ones most likely to be skipped under time pressure and the most costly to skip.
+The original build order (§13 in the design docs) recommended: paper-trade equity-only for several weeks before adding the options layer, and run options **log-only** for several weeks before enabling real submission, switching to `RISK_ENGINE=montecarlo` only after calibration. **Both of those gates were explicitly skipped, by deliberate choice, in favor of building faster** — options execution was wired to submit real (paper) orders from the start, and the Monte Carlo engine went live as the default before any calibration history existed. Both choices are logged inline in the relevant modules' own docstrings, not hidden. The tradeoff: less soak time before trusting the numbers, in exchange for having a fully working system sooner. The validation ledger (§16) exists specifically to make up that soak time retroactively, with real data, once enough weeks accumulate.
 
 ---
 
-## 14. Known tensions
+## 14. Known limitations
 
-Worth stating explicitly rather than discovering later.
+Consolidated from throughout this document, so nothing is buried:
 
-**Sizing sophistication exceeds signal validation.** The system applies several tilts on top of a ranking whose predictive value is unmeasured. Careful sizing changes the shape of losses, not their sign. Log what equal-weight would have returned over the same period — if this does not beat equal-weight net of costs, the complexity is not earning its place.
+1. **§6.3 — Monte Carlo doesn't reprice options along paths.** The most substantive gap. CVaR is currently computed as if the book were linear even in weeks options are held. See §6.3 for the full reasoning and why it hasn't mattered much yet.
+2. **`CVAR_TARGET` (0.25) has never been calibrated** against real weight history, and the Monte Carlo engine is the live default anyway (§6.5, §13).
+3. **§8.1 exit hysteresis not implemented** — the CSV format itself doesn't carry the data needed (ranks 21–25).
+4. **§4.3 index modifiers (risk/sentiment tilts) not built** — correctly deferred pending correlation data that doesn't exist yet.
+5. **Single-provider (Alpaca only)** for equity, options, and market data — the abstraction supports more, none are built.
+6. **No property-based testing** — the suite is thorough but example-based.
+7. **The screening signal itself is unvalidated.** Do rank 1–5 names actually outperform 16–20? Does this beat equal-weight net of costs? Unknown until the validation ledger (§16) has 12–26 weeks of real data — deliberately not analyzed prematurely.
 
-**Selecting for volatility while sizing by inverse volatility.** If the upstream screen targets volatile names, inverse-vol sizing then shrinks exactly those positions, leaving the book largest in the least volatile of the volatile picks. Decide deliberately whether that is intended.
+None of these are hidden failures — each is a real, acknowledged tradeoff made to ship a working system, documented here and in the code so a future decision to close any of them starts from an accurate picture rather than rediscovery.
 
-**Covered calls cap winners.** Short puts and calls work well on a book that drifts sideways; they work badly when a few names run hard. If the ranking's edge lives in the top names making large moves, options on those names fight the signal. The §5.3 rank restriction mitigates this rather than solving it.
+---
 
-**Monte Carlo is heavier than a 20-stock book strictly requires.** It is justified here because options make the analytic formula invalid, not because the equity-only case demanded it. Keep the analytic engine working and comparable — if the two consistently produce similar scalars in live conditions, that is worth knowing and is an argument for the simpler path.
+## 15. Automation & reliability
 
-**Paper trade for months, not weeks,** before any live capital. Track: hit rate by rank decile (does rank 1–5 actually outperform 16–20?), realised versus intended portfolio volatility, turnover cost, options fallback rate, and regime crossing count. Each of those can independently indicate the system should be simplified rather than extended.
+Everything below runs unattended, on a schedule, with no manual trigger required — this section didn't exist in the original design and was built entirely during hardening.
+
+### 15.1 GitHub Actions workflows (`.github/workflows/`)
+
+| Workflow | Schedule | Does |
+|---|---|---|
+| `weekly.yml` | Mon–Fri 12:15 UTC, self-gated | Runs `position_sizing.py`, commits `target_positions.csv`/`history/`/ledger back to the repo. Compute-only — never trades (§8.4). |
+| `daily.yml` | Tue–Fri 12:45 UTC | Runs `daily_monitor.py`. |
+| `report.yml` | Friday 21:30 UTC | Runs `track_performance.py`, updates `history/performance_summary.csv`, backfills forward returns into the ledger. |
+| `heartbeat.yml` | Mon–Fri | Runs `scheduling/check_heartbeat.py`. |
+
+Each requires repo secrets `ALPACA_API_KEY`/`ALPACA_SECRET_KEY` (and optionally `FINNHUB_API_KEY`) and "Read and write permissions" enabled under Settings → Actions, so the commit-back steps can push.
+
+### 15.2 Reliability fixes found only by running this for real
+
+None of these were anticipated in the original design; all were found by actually operating the automation and are worth listing because each is a genuinely common class of CI bug, not specific to this project:
+
+- **Trailing whitespace in a pasted secret.** A GitHub Actions secret with a trailing newline (a common copy-paste artifact) reaches `requests` as a literal newline in the auth header, which is correctly rejected — `requests.exceptions.InvalidHeader`, not a normal auth error, which is a much more confusing failure to debug. Fixed by `.strip()`-ing credentials at every Alpaca client constructor (`brokers/alpaca_equity.py`, `brokers/alpaca_options.py`, `data/alpaca_data.py`), so it's fixed regardless of whether the stored secret itself is ever cleaned up.
+- **Commit-back steps skipped on failure, not run.** A custom `if:` condition on a workflow step (e.g. `if: steps.gate.outcome == 'success'`) does *not* imply `always()` — GitHub's default "skip remaining steps after a failure" behavior still applies underneath it. `weekly.yml`'s commit-back step was silently skipped, not failed, whenever the sizing step itself errored — confirmed directly via the Actions API's step-level conclusions, not guessed. Fixed by making it `if: always() && steps.gate.outcome == 'success'`.
+- **`git add -f state/` failing on a directory that was never created.** If the underlying script exits before writing anything (e.g. the credential bug above, before it was fixed), the commit-back step's own `git add` fails with `fatal: pathspec 'state/' did not match any files` — a second failure caused by the first. Fixed with `mkdir -p` before every `git add -f` in all three commit-back steps.
+- **Two jobs scheduled at the identical minute.** `weekly.yml` and `daily.yml` originally both fired at 12:15 UTC on overlapping weekdays — a self-inflicted collision risk for their commit-back steps racing to push to `main` at the same moment. Fixed by staggering `daily.yml` to 12:45 UTC.
+- **Push races, generally.** Any commit-back step can still be rejected by an unrelated concurrent push (another workflow, or a manual push). All three retry once after a rebase: `git push || (git fetch origin main && git rebase origin/main && git push)`.
+- **Filesystem mtime is meaningless after a fresh checkout** — covered in full in §2.2.
+- **A shallow checkout can't see far enough back in history** to answer "when did this specific file last change" correctly if a later, unrelated commit is now `HEAD` — `weekly.yml`'s checkout uses `fetch-depth: 0` specifically so the git-history staleness check (§2.2) gives a correct answer.
+
+### 15.3 Local alternative (`scheduling/`)
+
+Windows Task Scheduler wrapper scripts (`register_tasks.ps1` + `run_*.ps1`) exist as a dev/local alternative to GitHub Actions — the spec's own recommendation is to treat GitHub Actions as authoritative for anything that matters, since a local scheduled task stops the moment the laptop is closed.
+
+### 15.4 Visibility
+
+The Streamlit dashboard's **Automation** tab (§18) shows heartbeat freshness per job and live GitHub Actions run status side by side, so scheduling health is checkable without leaving the dashboard.
+
+---
+
+## 16. Validation ledger & performance tracking
+
+Not present in the original design. Built specifically to answer §14 item 7 — whether the screening signal works at all — without waiting to build the analysis until enough data exists to need it.
+
+### 16.1 `validation_ledger.py`
+
+Writes two permanent, append-only (upsert-on-same-day, so repeated same-day test runs don't duplicate) CSVs on every successful weekly run:
+
+- **`history/validation_ledger.csv`** — one row per week: portfolio value, cash %, `k_vol`/`k_risk`/`k_regime`, turnover %, estimated cost bps, instrument-mix counts, skip counts by gate, MC diagnostics, `cvar_ann`, regime crossings YTD. `actual_return_1w`/`equal_weight_return_1w` start blank and are backfilled once a week has actually elapsed.
+- **`history/validation_ledger_per_name.csv`** — one row per (week, ticker): rank, weight, instrument, **`iv_ratio` and the fallback `reason`** (added specifically to make "is the IV threshold ever actually crossed" queryable directly, instead of hand-parsing archived CSVs), `forward_return_1w`/`forward_return_4w` (backfilled).
+
+### 16.2 `track_performance.py`
+
+Computes actual vs. equal-weight vs. benchmark (SPY) return per archived week, writes `history/performance_summary.csv`, backfills the ledger's forward-return columns. Structurally incapable of submitting an order — it only ever imports a read-only `MarketData` adapter, never a broker.
+
+### 16.3 Deliberately not built yet
+
+The actual statistical decision rules — rank-decile regression, equal-weight beat-rate, `CVAR_TARGET`/threshold recalibration — do not exist as code. The spec's own stated philosophy is that these need 12–26 weeks of real data before they mean anything; writing analysis code against zero rows of data would be guesswork; that data is now being collected automatically. Come back to this once `validation_ledger.csv` has enough rows.
+
+---
+
+## 17. Automated weekly screen generation
+
+Not present in the original design at all — Layer 1 (§0) was assumed to arrive from an external, human-run process. It's now itself automated.
+
+A **Claude Code Routine** (`Artemis Discovery - Weekly Top20 CSV Generation`), scheduled weekdays at 11:00 UTC — ~75 minutes before `weekly.yml` consumes its output — reuses `scheduling/is_weekly_run_day.py`'s exact gating logic, reads current holdings from the most recent `history/<date>/target_positions.csv`, runs the same volatility screen as §2's CSV schema expects (via the Bigdata.com MCP connector plus WebSearch/WebFetch), and commits `top20.csv`/`top20.md` plus dated archive copies back to the repo.
+
+Because a Routine's configuration lives in Claude's hosted UI, not a versioned file, **`mdinstructions/weekly-csv-generation-routine.md` is the source of truth for what it actually does** — if the routine's instructions change, that file must change in the same commit, or the two silently drift. `volatility-prompt.md` (repo root) is the same core screening prompt without the automation wrapper, for manual/ad hoc use.
+
+Nothing yet validates the generated CSV's shape before committing it beyond the prompt's own explicit formatting rules — `position_sizing.py`'s own §2.2 gate is the actual backstop if a bad file ever gets through (content-hash and schema validation both fire before anything downstream trusts it).
+
+---
+
+## 18. Dashboard
+
+Not present in the original design. `dashboard.py`, `streamlit run dashboard.py` — mostly read-only, with one deliberate exception.
+
+**Read-only tabs:** Overview (account/regime), Positions, Latest Decision (reads the most recent run log), Performance, Ledger Trends, Alerts (daily monitor's recent alerts, severity-colored), Automation (heartbeat freshness + live GitHub Actions status).
+
+**The one order-capable path:** the Positions tab's "Rebalance to target_positions.csv" section previews the plan `trade_from_csv.py` would execute, then requires an explicit review checkbox — which resets after every use — before an "Approve & Execute" button (disabled until checked) submits real paper orders via the same `execute_actions()` logic the CLI uses. Every execution is logged to `logs/dashboard_execution_*.json`. This is the human-in-the-loop checkpoint described in §8.4, made accessible without needing the CLI.
