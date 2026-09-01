@@ -229,6 +229,23 @@ def run_daily_monitor(equity_broker: EquityBroker, options_broker: Optional[Opti
     return alerts, regime_result
 
 
+def _emit_github_annotation(alert: Alert) -> None:
+    """Prints a GitHub Actions workflow-command annotation so a real alert
+    is visually distinct, right in the run summary, from the exit-code-2
+    "failure" this job deliberately raises to trigger GitHub's built-in
+    failed-run email (see main()'s sys.exit(2) - reusing that as a free
+    S15.5 alert channel means an intentional alert and a genuine crash both
+    show as the same red X otherwise). No-ops outside GitHub Actions (local
+    runs just get the normal print() above, unchanged) - GITHUB_ACTIONS is
+    set to "true" by the runner itself, never by this script.
+    Workflow commands don't accept literal newlines in the message; none of
+    these messages contain one, so no escaping is needed here."""
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return
+    level = "warning" if alert.severity == "warning" else "notice"
+    print(f"::{level}::{alert.category} ({alert.symbol}): {alert.message}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--options-enabled", action="store_true", help="Also check option positions (S8.3)")
@@ -265,6 +282,7 @@ def main():
         for a in alerts:
             tag = "WARNING" if a.severity == "warning" else "info"
             print(f"  [{tag}] {a.category:<28} {a.symbol:<24} {a.message}")
+            _emit_github_annotation(a)
 
     log_path = LOG_DIR / f"monitor_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.json"
     log_path.write_text(json.dumps({

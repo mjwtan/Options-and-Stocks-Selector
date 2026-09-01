@@ -15,6 +15,8 @@ from daily_monitor import (
     REGIME_DAILY_ALERT_THRESHOLD,
     ROLL_DTE_THRESHOLD,
     STOP_LOSS_PCT,
+    Alert,
+    _emit_github_annotation,
     check_assignment_risk,
     check_delta_drift,
     check_dte,
@@ -144,3 +146,37 @@ def test_regime_move_large_move_alerts():
     alerts = check_regime_move(prev_k_regime=0.90, new_k_regime=0.90 - REGIME_DAILY_ALERT_THRESHOLD - 0.01)
     assert len(alerts) == 1
     assert alerts[0].category == "regime_move"
+
+
+# --- GitHub Actions annotations: makes a real alert visually distinct from
+# the exit-code-2 "failure" this job deliberately raises to get GitHub's
+# free failed-run email (S15.5's alert channel) - otherwise an intentional
+# alert and a genuine crash look identical in the Actions UI. -------------
+
+def test_emit_github_annotation_warning_severity(monkeypatch, capsys):
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    alert = Alert("warning", "dte_threshold", "SPY260918P00705000", "12 trading days to expiry")
+
+    _emit_github_annotation(alert)
+
+    out = capsys.readouterr().out
+    assert out == "::warning::dte_threshold (SPY260918P00705000): 12 trading days to expiry\n"
+
+
+def test_emit_github_annotation_info_severity_uses_notice(monkeypatch, capsys):
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    alert = Alert("info", "delta_drift", "SPY260918P00705000", "drift 0.26")
+
+    _emit_github_annotation(alert)
+
+    out = capsys.readouterr().out
+    assert out.startswith("::notice::")
+
+
+def test_emit_github_annotation_noop_outside_github_actions(monkeypatch, capsys):
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    alert = Alert("warning", "dte_threshold", "SPY260918P00705000", "12 trading days to expiry")
+
+    _emit_github_annotation(alert)
+
+    assert capsys.readouterr().out == ""
