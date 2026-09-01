@@ -39,6 +39,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          mkdir -p history state
           git add -f history/ state/
           git diff --staged --quiet || git commit -m "Automated performance report ($(date -u +%Y-%m-%d))"
           git push
