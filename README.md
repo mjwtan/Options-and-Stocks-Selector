@@ -125,13 +125,22 @@ see [`mdinstructions/weekly-csv-generation-routine.md`](mdinstructions/weekly-cs
 for its exact instructions, kept in sync by hand since a Routine's config
 lives in Claude's hosted UI, not version control). Runs weekdays 11:00 UTC,
 gated to the week's real first trading day, produces `top20.csv`/`top20.md`.
-It's invoked as "Artemis Discovery" in the routine's own instructions and
-runs against the [Bigdata.com](https://bigdata.com) MCP connector (company
-fundamentals, ratios, analyst ratings, sector/market data) plus web search
-to fill gaps — this is a specific account's connectors and scheduled-agent
-setup, so **cloning this repo does not give you this step for free.** If you don't have a Claude Code Routine
-(or Bigdata.com access) of your own, `volatility-prompt.md` at the repo root
-is the exact same screening methodology, meant to be pasted into any LLM
+It's invoked through **Artemis Discovery** rather than a single LLM pass —
+the goal gets decomposed into experiments, multiple independent candidate
+screens are generated and validated against the schema/provenance rules in
+`volatility-prompt.md`, one or more reviewer models score each one, and only
+the best-validated version becomes this week's actual `top20.csv`. That
+matters here specifically because nothing reviews the *research* itself
+before `position_sizing.py` sizes real capital against it — see
+[`mdinstructions/weekly-csv-generation-routine.md`](mdinstructions/weekly-csv-generation-routine.md#why-artemis-discovery-not-a-single-llm-pass)
+for the full reasoning. It also runs against the
+[Bigdata.com](https://bigdata.com) MCP connector (company fundamentals,
+ratios, analyst ratings, sector/market data) plus web search to fill gaps —
+this is a specific account's connectors and scheduled-agent setup, so
+**cloning this repo does not give you this step for free.** If you don't
+have Artemis or Bigdata.com access of your own, `volatility-prompt.md` at
+the repo root is the exact same screening methodology, meant to be pasted
+into any LLM
 chat by hand — that's the intended fallback, not a lesser option, just a
 manual one.
 

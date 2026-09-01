@@ -27,6 +27,44 @@ rather than reimplementing the logic in two places — see `scheduling/is_weekly
 
 ---
 
+## Why Artemis Discovery, not a single LLM pass
+
+Step 2 is invoked through **Artemis Discovery** rather than as a single,
+one-shot LLM completion — a deliberate methodology choice, not just a tool
+name. Artemis's Discover process treats a goal as something to be
+*experimented on*, not answered once:
+
+1. **The goal is decomposed into Experiments** — distinct hypotheses about
+   how to best satisfy it, rather than one fixed approach.
+2. **Each Experiment produces multiple independent candidate Versions**, run
+   in parallel rather than sequentially refined from a single attempt — so a
+   weak first answer doesn't anchor everything downstream of it.
+3. **Every version is validated against real, automated checks** before it's
+   trusted — for a code-optimization goal that's a build/test/benchmark
+   pipeline; for this screening task, the equivalent is the same structural
+   and content-provenance discipline `volatility-prompt.md` demands (exact
+   CSV schema, the `[R]`/`[E]`/`NA` provenance marking, the 20-row
+   requirement) — a version that violates that discipline doesn't survive.
+4. **One or more independent reviewer models score each candidate** before
+   further budget is spent on it — a second (or third) opinion on the
+   reasoning, not just the first model grading its own homework.
+5. **Only the best-validated version is carried forward** — here, that
+   becomes this week's actual `top20.csv`/`top20.md`.
+
+**Why this matters for a stock screen specifically, more than it would for
+most tasks:** the output of this step isn't advisory — `position_sizing.py`
+sizes real (paper) capital against whatever ranking comes out of it, with no
+human review of the *research* itself before that happens (only of the
+resulting trades, per §8.4). A single LLM pass has no mechanism to catch its
+own weak reasoning, a thin catalyst dressed up as a strong one, or a
+subtly-wrong number it was confident about — whatever it produces first is
+what you get. Running several independent candidate analyses and having
+separate reviewer models score them before one is trusted is a genuine,
+structural check against exactly that failure mode, not just a more
+expensive way to ask the same question.
+
+---
+
 ## The routine's instructions, verbatim
 
 You are running as a scheduled cloud agent in the mjwtan/Options-and-Stocks-Selector repo. This fires every weekday at 11:00 UTC (07:00 America/New_York), but it must only actually do work on the week's genuine first NYSE trading day (Monday normally, Tuesday if Monday is an NYSE holiday) - identical holiday logic to the existing weekly sizing job.
