@@ -119,7 +119,11 @@ class Config:
     max_file_age_days: int = 3
 
     # --- regime scalar (regime-spec.md) ---
-    regime_benchmark: str = "^GSPC"      # falls back to SPY if unavailable, see fetch_benchmark_close()
+    regime_benchmark: str = "SPY"        # ^GSPC previously default here - Alpaca's feed can't serve raw
+                                          # index tickers at all, so every run paid for a guaranteed-fail
+                                          # call. SPY vs. GSPC's dividend-drag difference doesn't matter for
+                                          # this signal (see fetch_benchmark_close()) - it's a distance from
+                                          # SPY's own trailing SMA, not an absolute total-return comparison.
     regime_sma_window: int = 200
     regime_slope: float = 5.0
     regime_floor: float = 0.30           # set to 1.0 to cleanly disable the filter (spec S10)
@@ -469,10 +473,16 @@ def aligned_sigma(w: pd.Series, Sigma: pd.DataFrame):
 
 
 def fetch_benchmark_close(market_data: MarketData, cfg: Config, cal: TradingCalendar):
-    """Fetch daily closes for cfg.regime_benchmark (default ^GSPC). Alpaca's
-    stock data feed generally does not carry raw index tickers, so on any
-    failure this falls back to SPY - logging which was used, since SPY is
-    total-return-adjusted and the index is not (regime-spec.md S2)."""
+    """Fetch daily closes for cfg.regime_benchmark (default SPY). A raw
+    index ticker like ^GSPC used to be the default here, but Alpaca's stock
+    data feed can't serve index tickers at all - every run paid for a
+    guaranteed-fail call plus a confusing "unavailable" log line. Still
+    supported via --regime-benchmark for a future provider that does carry
+    index data; on any failure it falls back to SPY regardless, logging
+    which was used, since SPY is total-return-adjusted and a raw index is
+    not (regime-spec.md S2) - a real distinction for an absolute return
+    comparison, though not one that affects this module's distance-from-
+    its-own-trailing-SMA signal."""
     candidates = [cfg.regime_benchmark]
     if cfg.regime_benchmark != "SPY":
         candidates.append("SPY")
@@ -1035,7 +1045,7 @@ def main():
     parser.add_argument("--sigma-target", type=float, default=0.15)
     parser.add_argument("--position-cap", type=float, default=0.12)
     parser.add_argument("--position-floor", type=float, default=0.015)
-    parser.add_argument("--regime-benchmark", default="^GSPC", help="Falls back to SPY automatically if unavailable")
+    parser.add_argument("--regime-benchmark", default="SPY", help="Falls back to SPY automatically if unavailable")
     parser.add_argument("--regime-sma-window", type=int, default=200)
     parser.add_argument("--regime-slope", type=float, default=5.0)
     parser.add_argument("--regime-floor", type=float, default=0.30, help="Set to 1.0 to cleanly disable the regime filter")
