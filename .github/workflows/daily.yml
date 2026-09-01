@@ -11,7 +11,11 @@ name: Daily Monitor
 
 on:
   schedule:
-    - cron: "15 12 * * 2-5"
+    # 12:45 UTC - deliberately offset 30 minutes from weekly.yml's 12:15
+    # UTC. Both used to fire at the identical minute, which meant a real
+    # chance of both jobs' commit-back steps racing to push to main at the
+    # same time - found live when a push was rejected with "fetch first."
+    - cron: "45 12 * * 2-5"
   workflow_dispatch: {}
 
 jobs:
@@ -50,4 +54,7 @@ jobs:
           mkdir -p state
           git add -f state/
           git diff --staged --quiet || git commit -m "Automated daily monitor run ($(date -u +%Y-%m-%d))"
-          git push
+          # A push can be rejected if another workflow run (or a manual
+          # push) landed on main first - rebase onto the latest and retry
+          # once rather than hard-failing on an ordinary race.
+          git push || (git fetch origin main && git rebase origin/main && git push)

@@ -42,4 +42,5 @@ jobs:
           mkdir -p history state
           git add -f history/ state/
           git diff --staged --quiet || git commit -m "Automated performance report ($(date -u +%Y-%m-%d))"
-          git push
+          # See daily.yml's commit step for why this retries once after a rebase.
+          git push || (git fetch origin main && git rebase origin/main && git push)
