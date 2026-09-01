@@ -115,15 +115,33 @@ before they'd mean anything. See system-spec.md §16.
 
 ## Automation
 
-The entire pipeline runs unattended. Two things are scheduled:
+The entire pipeline runs unattended in the original deployment — but one
+scheduled step depends on infrastructure tied to that specific account, not
+this repo, so it's worth being upfront about exactly what a clone of this
+repo does and doesn't get for free:
 
 **The weekly volatility screen** — a Claude Code Routine (not a repo file;
 see [`mdinstructions/weekly-csv-generation-routine.md`](mdinstructions/weekly-csv-generation-routine.md)
 for its exact instructions, kept in sync by hand since a Routine's config
-lives in Claude's hosted UI). Runs weekdays 11:00 UTC, gated to the week's
-real first trading day, produces `top20.csv`/`top20.md`.
+lives in Claude's hosted UI, not version control). Runs weekdays 11:00 UTC,
+gated to the week's real first trading day, produces `top20.csv`/`top20.md`.
+It's invoked as "Artemis Discovery" in the routine's own instructions and
+runs against the [Bigdata.com](https://bigdata.com) MCP connector (company
+fundamentals, ratios, analyst ratings, sector/market data) plus web search
+to fill gaps — this is a specific account's connectors and scheduled-agent
+setup, so **cloning this repo does not give you this step for free.** If you don't have a Claude Code Routine
+(or Bigdata.com access) of your own, `volatility-prompt.md` at the repo root
+is the exact same screening methodology, meant to be pasted into any LLM
+chat by hand — that's the intended fallback, not a lesser option, just a
+manual one.
 
-**Everything downstream of that** — GitHub Actions (`.github/workflows/`):
+**Everything else — genuinely portable.** `position_sizing.py`,
+`trade_from_csv.py`, `daily_monitor.py`, `track_performance.py`, the
+dashboard, and all four GitHub Actions workflows below only need your own
+Alpaca (and optionally Finnhub) API keys — nothing about them is tied to
+any specific Claude account or connector.
+
+**Everything downstream of the screen** — GitHub Actions (`.github/workflows/`):
 
 | Workflow | Schedule | Does |
 |---|---|---|
