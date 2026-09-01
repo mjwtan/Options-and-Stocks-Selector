@@ -40,11 +40,10 @@ name. Artemis's Discover process treats a goal as something to be
    in parallel rather than sequentially refined from a single attempt — so a
    weak first answer doesn't anchor everything downstream of it.
 3. **Every version is validated against real, automated checks** before it's
-   trusted — for a code-optimization goal that's a build/test/benchmark
-   pipeline; for this screening task, the equivalent is the same structural
-   and content-provenance discipline `volatility-prompt.md` demands (exact
-   CSV schema, the `[R]`/`[E]`/`NA` provenance marking, the 20-row
-   requirement) — a version that violates that discipline doesn't survive.
+   trusted — here, that's the same structural and content-provenance
+   discipline `volatility-prompt.md` demands (exact CSV schema, the
+   `[R]`/`[E]`/`NA` provenance marking, the 20-row requirement) — a version
+   that violates that discipline doesn't survive.
 4. **One or more independent reviewer models score each candidate** before
    further budget is spent on it — a second (or third) opinion on the
    reasoning, not just the first model grading its own homework.
