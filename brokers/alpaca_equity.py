@@ -46,7 +46,11 @@ def _to_order(alpaca_order) -> Order:
 
 class AlpacaEquityBroker(EquityBroker):
     def __init__(self, api_key: str, secret_key: str, paper: bool = True):
-        self._client = TradingClient(api_key, secret_key, paper=paper)
+        # .strip(): a key/secret with a trailing newline (a common paste
+        # artifact when adding a GitHub Actions secret) makes every request
+        # fail with requests.exceptions.InvalidHeader instead of an auth
+        # error, which is a much more confusing failure to debug - found live.
+        self._client = TradingClient(api_key.strip(), secret_key.strip(), paper=paper)
 
     def positions(self) -> list[Position]:
         # get_all_positions() returns every asset class (equity AND

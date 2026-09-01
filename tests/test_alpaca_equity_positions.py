@@ -48,3 +48,15 @@ def test_positions_empty_when_only_options_held():
         result = broker.positions()
 
     assert result == []
+
+
+def test_constructor_strips_whitespace_from_credentials():
+    """Real bug found live: a GitHub Actions secret pasted with a trailing
+    newline reached requests as a literal '\\n' in the API key header,
+    which requests correctly rejects with InvalidHeader - a much more
+    confusing failure than a plain auth error. TradingClient must never
+    see the raw, unstripped value."""
+    with patch("brokers.alpaca_equity.TradingClient") as MockClient:
+        AlpacaEquityBroker("fake-key\n\n", "  fake-secret\n", paper=True)
+
+    MockClient.assert_called_once_with("fake-key", "fake-secret", paper=True)

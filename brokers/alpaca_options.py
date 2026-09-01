@@ -32,6 +32,11 @@ from options.occ import parse_occ_symbol
 
 class AlpacaOptionsBroker(OptionsBroker):
     def __init__(self, api_key: str, secret_key: str, paper: bool = True):
+        # .strip(): see AlpacaEquityBroker's constructor - a trailing
+        # newline in the key/secret (common paste artifact) turns every
+        # request into a confusing requests.exceptions.InvalidHeader
+        # instead of a normal auth error.
+        api_key, secret_key = api_key.strip(), secret_key.strip()
         self._trading = TradingClient(api_key, secret_key, paper=paper)
         self._data = OptionHistoricalDataClient(api_key, secret_key)
         self._checked_approval = False

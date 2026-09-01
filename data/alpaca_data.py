@@ -22,7 +22,11 @@ from brokers.base import MarketData, Quote
 
 class AlpacaMarketData(MarketData):
     def __init__(self, api_key: str, secret_key: str):
-        self._client = StockHistoricalDataClient(api_key, secret_key)
+        # .strip(): see brokers/alpaca_equity.py's constructor - a trailing
+        # newline in the key/secret (common paste artifact) turns every
+        # request into a confusing requests.exceptions.InvalidHeader
+        # instead of a normal auth error.
+        self._client = StockHistoricalDataClient(api_key.strip(), secret_key.strip())
 
     def daily_bars(self, symbols: list[str], start: datetime, end: datetime) -> pd.DataFrame:
         req = StockBarsRequest(
