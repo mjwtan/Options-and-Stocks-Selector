@@ -62,6 +62,7 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import sys
 import time
 from dataclasses import dataclass, asdict
@@ -193,19 +194,54 @@ def load_weekly_csv(csv_path):
     return df
 
 
+def _git_last_commit_date(path: Path) -> Optional[datetime]:
+    """Last commit date that touched `path`, per git history. Unlike the
+    filesystem mtime, this survives a fresh checkout - CI does a brand-new
+    `git checkout` every run, which stamps every file's mtime to "now"
+    regardless of the file's actual content age, making an mtime-based
+    staleness check silently unable to ever fire there (found live: it
+    never once triggered in months of scheduled runs). Returns None if
+    git isn't available, the path isn't tracked, or there's no repo here
+    at all - callers should fall back to mtime in that case."""
+    try:
+        result = subprocess.run(
+            ["git", "log", "-1", "--format=%cI", "--", path.name],
+            cwd=path.parent, capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    try:
+        return datetime.fromisoformat(result.stdout.strip())
+    except ValueError:
+        return None
+
+
 def check_staleness(csv_path, cfg: Config):
     """Two independent guards, since there's no generated_at column (S2):
     the file's content must differ from the last processed run, AND its
-    mtime must be recent. Either failing alone is not sufficient."""
+    age must be recent. Either failing alone is not sufficient. Age
+    prefers git's own commit history (see _git_last_commit_date) over the
+    filesystem mtime, falling back to mtime only for untracked/non-git
+    usage."""
     errors = []
     path = Path(csv_path)
     content = path.read_bytes()
     file_hash = hashlib.sha256(content).hexdigest()
-    mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+
+    git_date = _git_last_commit_date(path)
+    if git_date is not None:
+        mtime, age_source = git_date, "git commit"
+    else:
+        mtime, age_source = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc), "filesystem mtime"
     age = datetime.now(timezone.utc) - mtime
 
     if age > timedelta(days=cfg.max_file_age_days):
-        errors.append(f"input file was last modified {age.days} day(s) ago (> {cfg.max_file_age_days} day staleness limit)")
+        errors.append(
+            f"input file was last modified {age.days} day(s) ago per {age_source} "
+            f"(> {cfg.max_file_age_days} day staleness limit)"
+        )
 
     prev = {}
     if INPUT_HASH_STATE_PATH.exists():

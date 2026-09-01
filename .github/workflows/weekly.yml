@@ -30,7 +30,16 @@ jobs:
     permissions:
       contents: write
     steps:
+      # fetch-depth: 0 - a shallow (default) checkout only has the single
+      # latest commit, so `git log -1 -- top20.csv` in check_staleness()
+      # can't see far enough back to find the commit that actually last
+      # touched top20.csv if a later, unrelated commit landed on top of it
+      # (routine here - other workflows and manual pushes commit to main
+      # too) - it would report that unrelated commit's date instead,
+      # silently defeating the staleness check it's meant to feed.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
