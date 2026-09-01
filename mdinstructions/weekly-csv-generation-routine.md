@@ -177,7 +177,10 @@ LLM chat if you ever want to run the screen manually instead of waiting for
 the schedule. Keep the two in sync: if Step 2's methodology changes here, it
 needs to change there too, and vice versa.
 
-`mdinstructions/weekly-stock-prompt.md` is an earlier, superseded version of
-this prompt, kept for history — it predates the CSV-format fix described in
-system-spec.md, and does not match the current `position_sizing.py` schema.
-Do not use it as a template for either of the files above.
+An earlier, superseded version of this prompt (predating the CSV-format fix
+described in system-spec.md §2.2, and not matching the current
+`position_sizing.py` schema) used to live at
+`mdinstructions/weekly-stock-prompt.md` — removed rather than kept for
+history, since it wasn't cited by section number anywhere and risked being
+used as a template by mistake. `volatility-prompt.md` is the only version
+to use.

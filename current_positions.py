@@ -1,7 +1,6 @@
 """
 Prints current Alpaca positions formatted for the weekly prompt's "Current
-holdings" section (see mdinstructions/weekly-stock-prompt.md /
-volatility-prompt.md) - paste the output straight in.
+holdings" section (see volatility-prompt.md) - paste the output straight in.
 
 Equity positions are shown as ticker + % of account equity. Option
 positions are shown separately (weight isn't a meaningful comparison for
