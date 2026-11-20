@@ -1,6 +1,8 @@
 {
-  "k_regime": 0.5,
-  "last_run_at": "2026-11-19T20:57:48.159700+00:00",
+  "k_regime": 0.35,
+  "last_run_at": "2026-11-20T20:42:46.409914+00:00",
   "benchmark_used": "SPY",
-  "crossing_log": []
+  "crossing_log": [
+    "2026-11-20T20:42:46.409914+00:00"
+  ]
 }
